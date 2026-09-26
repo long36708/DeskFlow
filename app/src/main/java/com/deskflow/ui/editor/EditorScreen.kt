@@ -1,0 +1,551 @@
+package com.deskflow.ui.editor
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.deskflow.DOCK_PAGE_ID
+import com.deskflow.ui.DeskFlowViewModel
+import com.deskflow.ui.Phase
+import com.deskflow.ui.arrange.ArrangeDialog
+import com.deskflow.ui.pages.PageManagerDialog
+import com.deskflow.data.adapter.vivo.VivoConstants
+import com.deskflow.domain.model.ItemState
+import com.deskflow.domain.model.MAX_TITLE_LEN
+import kotlin.math.roundToInt
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DeskFlowApp(vm: DeskFlowViewModel) {
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(vm.message) {
+        vm.message?.let {
+            snackbarHostState.showSnackbar(it)
+            vm.message = null
+        }
+    }
+
+    when (vm.phase) {
+        Phase.Loading -> Centered("读取桌面布局中…（会复制一次 launcher 数据库）")
+        Phase.NoRoot -> Centered("未获得 Root 权限。\n请在 Magisk/KernelSU 中授权 DeskFlow 后点击重试。", retry = vm::load)
+        Phase.Error -> Centered("读取失败：${vm.loadError}", retry = vm::load)
+        else -> {
+            val ws = vm.workspace
+            if (ws == null) {
+                Centered("无数据")
+            } else {
+                val rev = vm.revision
+                val pages = remember(ws, rev) { vm.visiblePages() }
+                val chipIds = remember(pages) { listOf(DOCK_PAGE_ID) + pages.map { it.screenId } }
+                Scaffold(
+                    snackbarHost = { SnackbarHost(snackbarHostState) },
+                    topBar = {
+                        TopAppBar(
+                            title = { Text("DeskFlow · vivo", fontSize = 18.sp, maxLines = 1) },
+                            actions = {
+                                TextButton(onClick = { vm.showSearch = !vm.showSearch }) { Text("搜索") }
+                                TextButton(onClick = { vm.showPages = true }) { Text("页面") }
+                                OverflowMenu(vm)
+                                Button(
+                                    onClick = vm::requestApply,
+                                    enabled = vm.phase == Phase.Ready && vm.hasPendingChanges(),
+                                ) { Text(if (vm.phase == Phase.Applying) "应用中…" else "应用") }
+                            },
+                        )
+                    },
+                ) { pad ->
+                    Column(Modifier.fillMaxSize().padding(pad)) {
+                        if (vm.showSearch) SearchPanel(vm)
+
+                        LazyRow(contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+                            items(chipIds) { id ->
+                                AssistChip(
+                                    onClick = {
+                                        if (vm.selected != null) vm.moveSelectionToPage(id) else vm.currentScreenId = id
+                                    },
+                                    label = {
+                                        Text(
+                                            if (id == DOCK_PAGE_ID) "Dock"
+                                            else "第${pages.indexOfFirst { it.screenId == id } + 1}页($id)",
+                                        )
+                                    },
+                                    modifier = Modifier.padding(end = 4.dp),
+                                )
+                            }
+                        }
+
+                        Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 6.dp)) {
+                            val itemsOnPage = vm.visibleItems()
+                            if (vm.isDockPage()) {
+                                WorkGrid(vm, itemsOnPage, cols = 5, rows = 1, modifier = Modifier.fillMaxWidth().aspectRatio(5f).align(Alignment.TopCenter))
+                            } else {
+                                WorkGrid(vm, itemsOnPage, cols = 4, rows = 7, modifier = Modifier.fillMaxSize())
+                            }
+                        }
+
+                        HorizontalDivider()
+                        SelectionBar(vm)
+                    }
+                }
+
+                vm.folderOpen?.let { folder ->
+                    FolderDialog(vm, folder, onDismiss = { vm.folderOpen = null })
+                }
+                vm.renameTarget?.let { folder -> RenameFolderDialog(vm, folder) }
+                vm.confirmDelete?.let { item ->
+                    val childCount = if (item.isFolder) vm.workspace?.childrenOf(item)?.size ?: 0 else 0
+                    AlertDialog(
+                        onDismissRequest = { vm.confirmDelete = null },
+                        title = { Text("删除「${item.title}」？") },
+                        text = {
+                            Text(
+                                if (item.isFolder) {
+                                    "文件夹内的 $childCount 个图标会散落到桌面的空位上。可用「更多 → 撤销上一步」回退。"
+                                } else {
+                                    "该图标将从桌面移除（不会卸载应用）。可用「更多 → 撤销上一步」回退。"
+                                },
+                            )
+                        },
+                        confirmButton = { Button(onClick = vm::confirmDeleteNow) { Text("删除") } },
+                        dismissButton = { TextButton(onClick = { vm.confirmDelete = null }) { Text("取消") } },
+                    )
+                }
+                vm.confirmPlan?.let { plan ->
+                    if (plan.ops.isEmpty()) {
+                        LaunchedEffect(Unit) { vm.message = "没有待应用的改动"; vm.confirmPlan = null }
+                    } else {
+                        AlertDialog(
+                            onDismissRequest = { vm.confirmPlan = null },
+                            title = { Text("应用到桌面？") },
+                            text = {
+                                Text(
+                                    "$plan\n\n将写入 ${VivoConstants.LAUNCHER_PACKAGE} 的 launcher.db，" +
+                                        "并强制重启桌面。已自动备份，验证失败会自动回滚。",
+                                )
+                            },
+                            confirmButton = { Button(onClick = vm::doApply) { Text("确认应用") } },
+                            dismissButton = { TextButton(onClick = { vm.confirmPlan = null }) { Text("取消") } },
+                        )
+                    }
+                }
+                vm.arrangePreview?.let { result ->
+                    ArrangeDialog(vm, result, onDismiss = { vm.arrangePreview = null })
+                }
+                if (vm.showPages) PageManagerDialog(vm, onDismiss = { vm.showPages = false })
+                if (vm.showBackups) BackupsDialog(vm)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Centered(text: String, retry: (() -> Unit)? = null) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(text, fontSize = 15.sp)
+            if (retry != null) OutlinedButton(onClick = retry, modifier = Modifier.padding(top = 12.dp)) { Text("重试") }
+        }
+    }
+}
+
+@Composable
+private fun SelectionBar(vm: DeskFlowViewModel) {
+    val sel = vm.selected
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (sel == null) {
+            Text(
+                "点按选中图标 → 点空位移动 / 点其它图标合并成文件夹；长按拖拽移动；拖出左右边缘换页",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text("已选: ${sel.title}", fontSize = 13.sp, modifier = Modifier.weight(1f))
+            if (sel.isFolder) {
+                OutlinedButton(onClick = { vm.requestRename(sel) }) { Text("重命名") }
+            }
+            OutlinedButton(onClick = vm::requestDelete, modifier = Modifier.padding(start = 8.dp)) { Text("删除") }
+            TextButton(onClick = vm::cancelSelection, modifier = Modifier.padding(start = 8.dp)) { Text("取消") }
+        }
+    }
+}
+
+@Composable
+private fun OverflowMenu(vm: DeskFlowViewModel) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        TextButton(onClick = { expanded = true }) { Text("更多") }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("撤销上一步") },
+                onClick = { expanded = false; vm.undo() },
+                enabled = vm.canUndo(),
+            )
+            DropdownMenuItem(text = { Text("一键整理") }, onClick = { expanded = false; vm.requestArrange() })
+            DropdownMenuItem(text = { Text("备份 / 恢复") }, onClick = { expanded = false; vm.showBackups = true })
+            DropdownMenuItem(text = { Text("重新读取桌面") }, onClick = { expanded = false; vm.load() })
+        }
+    }
+}
+
+@Composable
+private fun SearchPanel(vm: DeskFlowViewModel) {
+    Column {
+        OutlinedTextField(
+            value = vm.searchQuery,
+            onValueChange = { vm.searchQuery = it },
+            placeholder = { Text("搜索应用名 / 包名") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+        val hits = remember(vm.searchQuery, vm.revision) { vm.searchResults() }
+        when {
+            vm.searchQuery.isBlank() -> Unit
+            hits.isEmpty() -> Text(
+                "无匹配",
+                fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 12.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            else -> LazyRow(contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+                items(hits) { hit ->
+                    AssistChip(
+                        onClick = { vm.locate(hit) },
+                        label = { Text("${hit.title.take(12)} · ${vm.locationLabel(hit)}", maxLines = 1) },
+                        modifier = Modifier.padding(end = 4.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkGrid(
+    vm: DeskFlowViewModel,
+    pageItems: List<ItemState>,
+    cols: Int,
+    rows: Int,
+    modifier: Modifier = Modifier,
+) {
+    var sizePx by remember { mutableStateOf(IntSize.Zero) }
+    var gridCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var dragItem by remember { mutableStateOf<ItemState?>(null) }
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    var dragPageSwitch by remember { mutableStateOf<Int?>(null) }
+    val density = LocalDensity.current
+
+    val cellW = if (sizePx.width == 0) 0 else sizePx.width / cols
+    val cellH = if (sizePx.height == 0) 0 else sizePx.height / rows
+
+    Box(
+        modifier
+            .clipToBounds()
+            .onGloballyPositioned { gridCoords = it }
+            .onSizeChanged { sizePx = it },
+    ) {
+        Canvas(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(cols, rows) {
+                    detectTapGestures { off ->
+                        if (cellW > 0 && cellH > 0) {
+                            vm.tapCell(
+                                (off.x / cellW).toInt().coerceIn(0, cols - 1),
+                                (off.y / cellH).toInt().coerceIn(0, rows - 1),
+                            )
+                        }
+                    }
+                },
+        ) {
+            val cw = size.width / cols
+            val ch = size.height / rows
+            for (i in 1 until cols) drawLine(Color(0x22888888), Offset(cw * i, 0f), Offset(cw * i, size.height), 1f)
+            for (i in 1 until rows) drawLine(Color(0x22888888), Offset(0f, ch * i), Offset(size.width, ch * i), 1f)
+        }
+
+        val ordered = pageItems.filter { it !== dragItem } + listOfNotNull(dragItem)
+        ordered.forEach { item ->
+            val dragging = dragItem === item
+            val xPx = (item.cellX * cellW + if (dragging) dragOffset.x.roundToInt() else 0)
+            val yPx = (item.cellY * cellH + if (dragging) dragOffset.y.roundToInt() else 0)
+            val wDp = with(density) { (item.spanX * cellW).toDp() }
+            val hDp = with(density) { (item.spanY * cellH).toDp() }
+
+            ItemCell(
+                vm = vm,
+                item = item,
+                dragging = dragging,
+                selected = vm.selected === item,
+                modifier = Modifier
+                    .offset { IntOffset(xPx, yPx) }
+                    .size(wDp, hDp)
+                    .pointerInput(item, cellW, cellH) {
+                        if (cellW == 0 || cellH == 0) return@pointerInput
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                dragItem = item
+                                dragOffset = Offset.Zero
+                                dragPageSwitch = null
+                            },
+                            onDrag = { change, pan ->
+                                dragOffset += pan
+                                change.consume()
+                                if (!vm.isDockPage()) {
+                                    val lx = gridCoords?.windowToLocal(change.position)?.x ?: change.position.x
+                                    val w = sizePx.width
+                                    if (lx < -cellW * 0.5f) {
+                                        val t = vm.neighborScreen(-1)
+                                        if (t != null && t != vm.currentScreenId) {
+                                            vm.currentScreenId = t
+                                            dragPageSwitch = t
+                                        }
+                                    } else if (lx > w + cellW * 1.5f) {
+                                        val t = vm.neighborScreen(1)
+                                        if (t != null && t != vm.currentScreenId) {
+                                            vm.currentScreenId = t
+                                            dragPageSwitch = t
+                                        }
+                                    }
+                                }
+                            },
+                            onDragEnd = {
+                                val switched = dragPageSwitch
+                                val movedX = (dragOffset.x / cellW).roundToInt()
+                                val movedY = (dragOffset.y / cellH).roundToInt()
+                                dragItem = null
+                                dragOffset = Offset.Zero
+                                if (switched != null) {
+                                    vm.dropToPage(item, switched)
+                                } else {
+                                    vm.dropOnCell(
+                                        item,
+                                        (item.cellX + movedX).coerceIn(0, cols - 1),
+                                        (item.cellY + movedY).coerceIn(0, rows - 1),
+                                    )
+                                }
+                            },
+                            onDragCancel = {
+                                dragItem = null
+                                dragOffset = Offset.Zero
+                            },
+                        )
+                    }
+                    .pointerInput(item) {
+                        detectTapGestures { vm.tapItem(item) }
+                    },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ItemCell(
+    vm: DeskFlowViewModel,
+    item: ItemState,
+    dragging: Boolean,
+    selected: Boolean,
+    modifier: Modifier,
+) {
+    val shape = RoundedCornerShape(8.dp)
+    Box(
+        modifier
+            .padding(2.dp)
+            .background(
+                when {
+                    dragging -> Color(0x6642A5F5)
+                    selected -> Color(0x55FFB300)
+                    else -> Color.Transparent
+                },
+                shape,
+            ),
+    ) {
+        Column(
+            Modifier.fillMaxSize().padding(3.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                if (item.isFolder) {
+                    FolderFace(vm, item)
+                } else {
+                    val bmp = vm.iconFor(item)
+                    if (bmp != null) {
+                        Image(bmp, contentDescription = item.title, modifier = Modifier.fillMaxSize().padding(5.dp))
+                    } else {
+                        Box(Modifier.size(36.dp).background(Color(0x33999999), shape))
+                    }
+                }
+            }
+            Text(
+                item.title.substringAfterLast('/').take(20),
+                fontSize = 10.sp,
+                maxLines = 1,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun FolderFace(vm: DeskFlowViewModel, folder: ItemState) {
+    val ws = vm.workspace ?: return
+    val children = ws.childrenOf(folder).take(4)
+    Box(
+        Modifier.fillMaxSize().padding(4.dp).background(Color(0x22000000), RoundedCornerShape(10.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column {
+            children.chunked(2).forEach { row ->
+                Row(horizontalArrangement = Arrangement.Center) {
+                    row.forEach { child ->
+                        val bmp = vm.iconFor(child)
+                        if (bmp != null) {
+                            Image(bmp, contentDescription = null, modifier = Modifier.size(18.dp).padding(1.dp))
+                        } else {
+                            Box(Modifier.size(18.dp).padding(1.dp).background(Color(0x55999999), RoundedCornerShape(4.dp)))
+                        }
+                    }
+                    repeat(2 - row.size) { Box(Modifier.size(18.dp)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FolderDialog(vm: DeskFlowViewModel, folder: ItemState, onDismiss: () -> Unit) {
+    val ws = vm.workspace ?: return
+    val rev = vm.revision
+    val children = ws.childrenOf(folder)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${folder.title}（${children.size}，点图标移回桌面）rev$rev") },
+        text = {
+            Column {
+                children.chunked(4).forEach { rowItems ->
+                    Row {
+                        rowItems.forEach { child ->
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.clickable { vm.ejectChild(child) }.padding(6.dp),
+                            ) {
+                                val bmp = vm.iconFor(child)
+                                if (bmp != null) Image(bmp, contentDescription = null, modifier = Modifier.size(44.dp))
+                                else Box(Modifier.size(44.dp).background(Color(0x33999999), RoundedCornerShape(8.dp)))
+                                Text(child.title.take(6), fontSize = 10.sp, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { Button(onClick = onDismiss) { Text("关闭") } },
+        dismissButton = {
+            TextButton(onClick = { vm.requestRename(folder) }) { Text("重命名") }
+        },
+    )
+}
+
+@Composable
+private fun RenameFolderDialog(vm: DeskFlowViewModel, folder: ItemState) {
+    var text by remember(folder) { mutableStateOf(folder.title) }
+    AlertDialog(
+        onDismissRequest = { vm.renameTarget = null },
+        title = { Text("重命名文件夹") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it.take(MAX_TITLE_LEN) },
+                    placeholder = { Text("文件夹名称") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "最多 $MAX_TITLE_LEN 个字；保存后仍需点「应用」写入桌面。",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+        },
+        confirmButton = { Button(onClick = { vm.commitRename(text) }) { Text("保存") } },
+        dismissButton = { TextButton(onClick = { vm.renameTarget = null }) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun BackupsDialog(vm: DeskFlowViewModel) {
+    val backups = vm.backups()
+    AlertDialog(
+        onDismissRequest = { vm.showBackups = false },
+        title = { Text("备份（保留最近 10 份）") },
+        text = {
+            Column {
+                OutlinedButton(onClick = vm::manualBackup, modifier = Modifier.fillMaxWidth()) { Text("立即备份当前桌面") }
+                Spacer(Modifier.size(8.dp))
+                if (backups.isEmpty()) Text("暂无备份")
+                backups.forEach { entry ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(entry.file.name.substringBefore(".db"), fontSize = 12.sp, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { vm.restoreBackup(entry.file.name) }) { Text("恢复") }
+                    }
+                }
+            }
+        },
+        confirmButton = { Button(onClick = { vm.showBackups = false }) { Text("关闭") } },
+    )
+}

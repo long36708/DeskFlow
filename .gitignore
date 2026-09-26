@@ -1,0 +1,21 @@
+# IDE
+.idea/
+.vscode/
+
+# Build outputs
+build/
+.gradle/
+.kotlin/
+local.properties
+captures/
+
+# Signing
+*.jks
+*.keystore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug scratch
+ui_dump.xml
