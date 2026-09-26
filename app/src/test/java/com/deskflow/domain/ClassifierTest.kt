@@ -132,18 +132,18 @@ class ClassifierTest {
 
     @Test
     fun arrangeFillsPagesInCategoryOrder() {
-        val socials = (1L..30L).map { app(it, "com.tencent.mm", "微信$it") }
+        val socials = (1L..30L).map { app(it, "com.tencent.qqmusic", "音乐$it") }
         val games = (100L..104L).map { app(it, "com.mihoyo.genshin", "游戏$it") }
         val ws = workspace(listOf(1, 2), *(socials + games).toTypedArray())
         val result = AutoArranger.arrange(ws)
 
-        // 社交 30 → 4 夹（9/9/9/3），游戏 5 → 1 夹：35 个图标只占 5 格，一页就装得下
+        // 影音 30 → 4 夹（9/9/9/3），游戏 5 → 1 夹：35 个图标只占 5 格，一页就装得下
         assertEquals(35, result.placedCount)
         assertEquals(0, result.unplaced.size)
         assertEquals(5, result.newFolderCount)
         assertEquals(5, result.pages[0].placements.size)
         assertEquals(0, result.pages[1].placements.size)
-        assertEquals(4, result.pages[0].placements.count { it.isNewFolder && it.category == Category.SOCIAL })
+        assertEquals(4, result.pages[0].placements.count { it.isNewFolder && it.category == Category.MEDIA })
         assertEquals(1, result.pages[0].placements.count { it.isNewFolder && it.category == Category.GAME })
         assertEquals(9, result.pages[0].placements.first { it.isNewFolder }.members.size)
     }
@@ -186,7 +186,7 @@ class ClassifierTest {
 
     @Test
     fun arrangeKeepsDockUntouched() {
-        val dockItem = app(50, "com.tencent.mm", "微信dock", container = CONTAINER_DOCK, screen = 0, x = 2, y = 0)
+        val dockItem = app(50, "com.tencent.qqmusic", "音乐dock", container = CONTAINER_DOCK, screen = 0, x = 2, y = 0)
         val desktopItem = app(1, "com.tencent.mm", "微信")
         val ws = workspace(listOf(1), dockItem, desktopItem)
         val result = AutoArranger.arrange(ws)
@@ -219,8 +219,8 @@ class ClassifierTest {
 
     @Test
     fun applyWritesPositionsAndCountsMoves() {
-        val a = app(1, "com.tencent.mm", "微信", x = 3, y = 5)
-        val b = app(2, "com.tencent.mm", "微信2", x = 1, y = 0)
+        val a = app(1, "com.tencent.qqmusic", "微信", x = 3, y = 5)
+        val b = app(2, "com.tencent.qqmusic", "微信2", x = 1, y = 0)
         val ws = workspace(listOf(1), a, b)
         val result = AutoArranger.arrange(ws)
         AutoArranger.apply(ws, result, WorkspaceEditor(ws))
@@ -236,7 +236,7 @@ class ClassifierTest {
     @Test
     fun folderIsMovedAsAWhole() {
         val folder = app(9, "", "文件夹", itemCode = ItemType.FOLDER)
-        val child = app(10, "com.tencent.mm", "微信", container = 9L)
+        val child = app(10, "com.tencent.qqmusic", "微信", container = 9L)
         val other = app(11, "com.tencent.mm", "微信2")
         val ws = workspace(listOf(1), folder, child, other)
         val result = AutoArranger.arrange(ws)
@@ -273,10 +273,10 @@ class ClassifierTest {
 
     @Test
     fun resultGroupsAllItemsByCategory() {
-        val ws = workspace(listOf(1), app(1, "com.tencent.mm", "微信"), app(2, "com.mihoyo.genshin", "游戏"), app(3, "com.unknown.zzz", "未知"))
+        val ws = workspace(listOf(1), app(1, "com.tencent.qqmusic", "微信"), app(2, "com.mihoyo.genshin", "游戏"), app(3, "com.unknown.zzz", "未知"))
         val result: ArrangeResult = AutoArranger.arrange(ws)
         val order = result.groups.map { it.first }
-        assertEquals(listOf(Category.SOCIAL, Category.GAME, Category.OTHER), order)
+        assertEquals(listOf(Category.MEDIA, Category.GAME, Category.OTHER), order)
         assertEquals(3, result.placedCount)
     }
 
@@ -284,13 +284,13 @@ class ClassifierTest {
 
     @Test
     fun sameCategoryAppsAreCollectedIntoFolder() {
-        val socials = (1L..6L).map { app(it, "com.tencent.mm", "微信$it") }
+        val socials = (1L..6L).map { app(it, "com.tencent.qqmusic", "音乐$it") }
         val ws = workspace(listOf(1), *socials.toTypedArray())
         val result = AutoArranger.arrange(ws)
 
         assertEquals(1, result.newFolderCount)
         val slot = result.pages[0].placements.single { it.isNewFolder }
-        assertEquals("社交", slot.item.title)
+        assertEquals("影音", slot.item.title)
         assertEquals(6, slot.members.size)
         assertEquals(6, slot.iconCount)
         assertEquals(1, result.pages[0].placements.size) // 6 个图标只占 1 格
@@ -298,7 +298,7 @@ class ClassifierTest {
         AutoArranger.apply(ws, result, WorkspaceEditor(ws))
         val folder = ws.liveItems.single { it.isFolder }
         assertTrue(folder.isNew)
-        assertEquals("社交", folder.title)
+        assertEquals("影音", folder.title)
         val children = ws.childrenOf(folder)
         assertEquals(6, children.size)
         children.forEach { assertEquals(folder.dbId, it.container) }
@@ -346,5 +346,52 @@ class ClassifierTest {
         val placed = result.pages[0].placements.single { it.item.dbId == 9L }
         assertEquals(Category.MEDIA, placed.category)
         assertFalse(placed.isNewFolder)
+    }
+
+    @Test
+    fun pinnedAppsPlacedAfterFoldersInGivenOrder() {
+        val socials = (1L..4L).map { app(it, "com.tencent.qqmusic", "音乐$it") }
+        val mt = app(10L, "bin.mt.plus", "MT管理器")
+        val qq = app(11L, "com.tencent.mobileqq", "QQ")
+        val wechat = app(12L, "com.tencent.mm", "微信")
+        val coolapk = app(13L, "com.coolapk.market", "酷安")
+        val ws = workspace(listOf(1), *(socials + mt + qq + wechat + coolapk).toTypedArray())
+        val result = AutoArranger.arrange(ws)
+
+        // 4 个影音收 1 夹占首格，随后钉选应用按 PinnedApps 顺序铺
+        assertEquals(1, result.newFolderCount)
+        assertEquals(listOf("MT管理器", "QQ", "微信", "酷安"), result.pinned.map { it.title })
+        val placements = result.pages[0].placements
+        assertEquals(5, placements.size)
+        assertTrue(placements[0].isNewFolder)
+        assertEquals(listOf(10L, 11L, 12L, 13L), placements.drop(1).map { it.item.dbId })
+        assertEquals(listOf(1 to 0, 2 to 0, 3 to 0, 0 to 1), placements.drop(1).map { it.cellX to it.cellY })
+        // 钉选项不参与分类分组
+        assertTrue(result.groups.none { (_, items) -> items.any { it.dbId in 10L..13L } })
+    }
+
+    @Test
+    fun missingPinnedAppsAreSkipped() {
+        val wechat = app(1L, "com.tencent.mm", "微信")
+        val ws = workspace(listOf(1), wechat)
+        val result = AutoArranger.arrange(ws)
+
+        assertEquals(listOf("微信"), result.pinned.map { it.title })
+        assertEquals(0, result.newFolderCount)
+        val pl = result.pages[0].placements.single()
+        assertFalse(pl.isNewFolder)
+        assertEquals(1L, pl.item.dbId)
+    }
+
+    @Test
+    fun duplicatePackagePinsOnlyFirst() {
+        val a = app(1L, "bin.mt.plus", "MT1")
+        val b = app(2L, "bin.mt.plus", "MT2")
+        val ws = workspace(listOf(1), a, b)
+        val result = AutoArranger.arrange(ws)
+
+        assertEquals(listOf(1L), result.pinned.map { it.dbId })
+        val otherPl = result.pages[0].placements.first { it.item.dbId == 2L }
+        assertFalse(otherPl.isNewFolder)
     }
 }
