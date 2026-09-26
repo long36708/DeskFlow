@@ -394,4 +394,54 @@ class ClassifierTest {
         val otherPl = result.pages[0].placements.first { it.item.dbId == 2L }
         assertFalse(otherPl.isNewFolder)
     }
+
+    @Test
+    fun pinnedAppsExtractedFromFolderAndEmptyFolderDissolves() {
+        val folder = app(9L, "", "社交", itemCode = ItemType.FOLDER)
+        val qq = app(10L, "com.tencent.mobileqq", "QQ", container = 9L, x = 0, y = 0)
+        val wechat = app(11L, "com.tencent.mm", "微信", container = 9L, x = 1, y = 0)
+        val other = app(12L, "com.unknown.pkg", "未知", x = 2, y = 0)
+        val ws = workspace(listOf(1), folder, qq, wechat, other)
+        val result = AutoArranger.arrange(ws)
+
+        // 夹里全是钉选应用：抽空后剩 0 个成员，夹解散；抽出的成员计为移位
+        assertEquals(listOf(9L), result.dissolvedFolders.map { it.dbId })
+        assertEquals(listOf("QQ", "微信"), result.pinned.map { it.title })
+        assertEquals(2, result.movedCount)
+
+        AutoArranger.apply(ws, result, WorkspaceEditor(ws))
+        assertTrue(folder.isDeleted)
+        assertEquals(CONTAINER_DESKTOP, qq.container)
+        assertEquals(CONTAINER_DESKTOP, wechat.container)
+    }
+
+    @Test
+    fun folderWithEnoughRemainingMembersSurvivesExtraction() {
+        val folder = app(9L, "", "社交", itemCode = ItemType.FOLDER)
+        val qq = app(10L, "com.tencent.mobileqq", "QQ", container = 9L, x = 0, y = 0)
+        val others = (20L..23L).map {
+            app(it, "com.tencent.qqmusic", "音乐$it", container = 9L, x = ((it - 20) % 3).toInt(), y = ((it - 20) / 3).toInt())
+        }
+        val ws = workspace(listOf(1), folder, qq, *others.toTypedArray())
+        val result = AutoArranger.arrange(ws)
+
+        // 抽走 QQ 后夹里还剩 4 个，夹保留并整体挪位，剩余成员留在夹内
+        assertTrue(result.dissolvedFolders.isEmpty())
+        AutoArranger.apply(ws, result, WorkspaceEditor(ws))
+        assertFalse(folder.isDeleted)
+        assertEquals(CONTAINER_DESKTOP, qq.container)
+        others.forEach { assertEquals(9L, it.container) }
+    }
+
+    @Test
+    fun pinnedAppIsExtractedFromDock() {
+        val qq = app(1L, "com.tencent.mobileqq", "QQ", container = CONTAINER_DOCK, screen = 0, x = 2, y = 0)
+        val ws = workspace(listOf(1), qq)
+        val result = AutoArranger.arrange(ws)
+
+        assertEquals(listOf("QQ"), result.pinned.map { it.title })
+        AutoArranger.apply(ws, result, WorkspaceEditor(ws))
+        assertEquals(CONTAINER_DESKTOP, qq.container)
+        assertEquals(0 to 0, qq.cellX to qq.cellY)
+    }
 }

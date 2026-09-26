@@ -49,6 +49,8 @@ data class ArrangeResult(
     val groups: List<Pair<Category, List<ItemState>>>,
     /** 钉选到首页的应用，按 PinnedApps 顺序，只含实际存在的。 */
     val pinned: List<ItemState> = emptyList(),
+    /** 因钉选抽出而剩余成员 <2、将被解散的既有文件夹。 */
+    val dissolvedFolders: List<ItemState> = emptyList(),
 ) {
     val placedCount: Int get() = pages.sumOf { page -> page.placements.sumOf { it.iconCount } }
 
@@ -88,7 +90,21 @@ object AutoArranger {
         val screenIds = ws.pages.filter { !it.isDeleted }.map { it.screenId }
         val pinned = pinnedItems(ws)
         val pinnedSet = pinned.toHashSet()
-        val desktopItems = ws.liveItems.filter { it.container == CONTAINER_DESKTOP && it !in pinnedSet }
+        val dissolved = ArrayList<ItemState>()
+        val rescued = ArrayList<ItemState>()
+        pinned.forEach { p ->
+            val parent = ws.items.firstOrNull { it.dbId == p.container && it.isFolder } ?: return@forEach
+            if (dissolved.any { it.dbId == parent.dbId }) return@forEach
+            val remaining = ws.childrenOf(parent).filter { it !in pinnedSet }
+            if (remaining.size < 2) {
+                dissolved += parent
+                rescued += remaining
+            }
+        }
+        val dissolvedIds = dissolved.map { it.dbId }.toHashSet()
+        val desktopItems = ws.liveItems.filter {
+            it.container == CONTAINER_DESKTOP && it !in pinnedSet && it.dbId !in dissolvedIds
+        } + rescued
 
         val fixed = LinkedHashMap<Int, Set<Long>>()
         screenIds.forEach { sid ->
@@ -123,11 +139,12 @@ object AutoArranger {
             laid = layoutOf(screenIds, grid, fixed, blocked, ordered)
         }
 
-        return ArrangeResult(laid.pages, laid.unplaced, groups, pinned)
+        return ArrangeResult(laid.pages, laid.unplaced, groups, pinned, dissolved)
     }
 
-    /** 把排布结果写回 workspace：单项改坐标，文件夹槽位经编辑器真正建行并把成员收进去。 */
+    /** 把排布结果写回 workspace：先解散被抽空的夹，单项改坐标，文件夹槽位经编辑器真正建行并把成员收进去。 */
     fun apply(ws: Workspace, result: ArrangeResult, editor: WorkspaceEditor) {
+        result.dissolvedFolders.forEach { it.isDeleted = true }
         result.pages.forEach { page ->
             page.placements.forEach { pl ->
                 if (pl.isNewFolder) {
@@ -139,6 +156,12 @@ object AutoArranger {
                     pl.item.cellY = pl.cellY
                 }
             }
+        }
+        // 解散夹的成员若因页满没进排布计划，兜底挪回桌面；实在无处安放则与手删夹行为一致地删除
+        val dissolvedIds = result.dissolvedFolders.map { it.dbId }.toHashSet()
+        ws.liveItems.filter { it.container in dissolvedIds }.forEach { child ->
+            val home = result.dissolvedFolders.first { it.dbId == child.container }.screen
+            if (!editor.placeFirstFree(child, CONTAINER_DESKTOP, home)) child.isDeleted = true
         }
     }
 
