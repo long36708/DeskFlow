@@ -227,16 +227,38 @@ UI：TopAppBar 新增「整理」→ `ui/arrange/ArrangeDialog` 预览（移位�
   fansirsqi.xposed.sesame、lin.xposed、com.xposed.woodpecker、com.noobexon.xposedfakelocation、
   io.github.chsbuffer.revancedxposed 等，均靠 `xposed` 关键词命中），≥4 会建「XP插件」夹
 
-### 待真机验证
+### 真机验证（2026-09-26，设备 10AF59276U006BH / vivo PD2419）
 
-1. 一键整理后首页是否为「夹 → 7 钉选 → 其它」（RikkaHub 包名本轮已改正，需确认它现在能上首页）
-2. XP 模块（按 JSON 规则命中）是否正确收进「XP插件」夹
-3. 支付宝（`com.eg.android.AlipayGphone`）是否真的出现在首页第一行
-   （本轮修复前支付宝因大小写问题从未钉上成功）
+adb 代跑点击：更多 → 一键整理 → 采用此排布 → 应用（确认框「移动 220 项 / 新增 1 项 / 删除 0 项」），
+桌面强启重载后再用「重新读取桌面」从库里读回第一页网格：
+
+```
+row0  系统      系统 2   社交    影音
+row1  影音 2    购物生活  购物生活 2  金融支付
+row2  金融支付 2 办公效率  拍摄美化  实用工具
+row3  XP插件    folder_tools  folder_name  folder_name
+row4  测试改名   MT管理器   QQ      微信
+row5  酷安      高德地图    RikkaHub 支付宝
+row6  视频下载去水印 …（其余图标）
+```
+
+- 预览口径正确：`钉选到首页 7 项`、`XP插件 10 项 → 1 夹`、可重排 230 项与 placedCount 一致
+- 首页布局符合设计：所有文件夹（新建 + 既有）在前 → 7 个钉选应用按 `PinnedApps` 顺序 → 其余图标
+- 支付宝与 RikkaHub（改对包名后）确实上了首页，验证了大小写修复
+- XP 模块 10 个命中规则 → 9 个进「XP插件」夹、剩 1 个散放在钉选之后（尾组只剩 1 项不成夹的既有语义）
+- 写库读回一致，SafeWriter 验证通过；上一轮的文件夹改名「测试改名」在强启重载后仍保留
+  （说明 vivo 采用 `location_jan.title`，桌面图标标题重命名这条路可调研）
+- 顺带观察：桌面上有两个夹的标题在库里是字面量 `folder_name`（vivo 未解析的字符串资源名），
+  这类夹认领类别时会落到未分类
+
+### 仍待真机验证
+
+1. 钉选应用原本在既有夹 / Dock 里时的抽出与「剩 <2 自动解散」（本机桌面项都在桌面上，未触发该路径）
+2. XP 规则误伤面（`模块` 标题关键词、`riru`/`zygisk` 关键词命中过宽时改 JSON 即可）
 
 ## 下一步
 
-- 真机验证本轮：一键整理收夹效果、文件夹改名是否被 vivo 保留
+- 真机验证本轮：一键整理收夹效果、文件夹改名是否被 vivo 保留（改名保留已于 7 节真机验证确认）
 - 收夹是否改成按页配额（避免桌面塌缩，见 6 节末）
 - 桌面图标标题重命名（需先调研 vivo 是否采用 `location_jan.title`）
 - 按使用频率归页（需 usage stats 权限，尚未调研）
