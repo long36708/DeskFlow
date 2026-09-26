@@ -15,9 +15,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -49,6 +51,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -188,6 +191,7 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
                 }
                 if (vm.showPages) PageManagerDialog(vm, onDismiss = { vm.showPages = false })
                 if (vm.showBackups) BackupsDialog(vm)
+                if (vm.showAppPicker) AppPickerDialog(vm, onDismiss = { vm.showAppPicker = false })
             }
         }
     }
@@ -236,6 +240,7 @@ private fun OverflowMenu(vm: DeskFlowViewModel) {
                 enabled = vm.canUndo(),
             )
             DropdownMenuItem(text = { Text("一键整理") }, onClick = { expanded = false; vm.requestArrange() })
+            DropdownMenuItem(text = { Text("添加应用") }, onClick = { expanded = false; vm.showAppPicker = true })
             DropdownMenuItem(text = { Text("备份 / 恢复") }, onClick = { expanded = false; vm.showBackups = true })
             DropdownMenuItem(text = { Text("重新读取桌面") }, onClick = { expanded = false; vm.load() })
         }
@@ -528,6 +533,64 @@ private fun RenameFolderDialog(vm: DeskFlowViewModel, folder: ItemState) {
         confirmButton = { Button(onClick = { vm.commitRename(text) }) { Text("保存") } },
         dismissButton = { TextButton(onClick = { vm.renameTarget = null }) { Text("取消") } },
     )
+}
+
+@Composable
+private fun AppPickerDialog(vm: DeskFlowViewModel, onDismiss: () -> Unit) {
+    val entries = remember(vm.appQuery, vm.revision) { vm.filteredAppEntries() }
+    val onDesktop = remember(vm.revision) { vm.desktopIntents() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("添加应用到 ${if (vm.isDockPage()) "Dock" else "当前页"}（${entries.size}）") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = vm.appQuery,
+                    onValueChange = { vm.appQuery = it },
+                    placeholder = { Text("按应用名 / 包名过滤") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.size(6.dp))
+                LazyColumn(Modifier.fillMaxWidth().height(360.dp)) {
+                    items(entries) { entry ->
+                        val placed = entry.intent in onDesktop
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !placed) { vm.addAppToDesktop(entry) }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AppIcon(vm, entry.intent)
+                            Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                                Text(entry.label.take(20), fontSize = 14.sp, maxLines = 1)
+                                Text(entry.pkg, fontSize = 10.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            if (placed) {
+                                Text("已在桌面", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            } else {
+                                TextButton(onClick = { vm.addAppToDesktop(entry) }) { Text("添加") }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { Button(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+@Composable
+private fun AppIcon(vm: DeskFlowViewModel, intent: String) {
+    var bmp by remember(intent) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(intent) { bmp = vm.appIcon(intent) }
+    val icon = bmp
+    if (icon != null) {
+        Image(icon, contentDescription = null, modifier = Modifier.size(36.dp))
+    } else {
+        Box(Modifier.size(36.dp).background(Color(0x33999999), RoundedCornerShape(8.dp)))
+    }
 }
 
 @Composable

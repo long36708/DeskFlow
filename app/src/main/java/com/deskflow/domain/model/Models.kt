@@ -19,7 +19,10 @@ data class GridConfig(
     val folderColumns: Int = 3,
     val folderRows: Int = 3,
 ) {
-    /** 夹内可放图标数（3×3）。 */
+    /**
+     * 收夹切块用的标称容量（[folderColumns] × [folderRows] = 9）。
+     * 这不是硬上限：vivo 夹内是 3 列多行，实测 10 个渲染成 4 行，超容量也放得下。
+     */
     val folderCapacity: Int get() = folderColumns * folderRows
 }
 

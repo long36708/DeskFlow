@@ -215,4 +215,42 @@ class EditorTest {
         assertEquals("游戏", folder.title)
         assertEquals(3, ws.childrenOf(folder).size)
     }
+
+    // ---------- add app to desktop ----------
+
+    @Test
+    fun addAppPlacesNewItemOnFirstFreeCellAndInsertsItemType30() {
+        val occupied = app(1, 0, 0)
+        val ws = workspace(occupied)
+        val ed = WorkspaceEditor(ws)
+        val added = ed.addApp("com.tencent.mm/com.tencent.mm.ui.LauncherUI", "微信", CONTAINER_DESKTOP, 1)
+        assertNotNull(added)
+        assertTrue(added!!.isNew)
+        assertEquals(ItemType.APP, added.itemCode) // 30
+        // (0,0) 被占，首个空位是 (1,0)
+        assertEquals(1 to 0, added.cellX to added.cellY)
+        assertEquals(101L, DiffCalculator.plan(ws, 100).let {
+            val insert = it.ops.filterIsInstance<DbOp.Insert>().single()
+            assertEquals("com.tencent.mm/com.tencent.mm.ui.LauncherUI", insert.row.intent)
+            assertEquals(30, insert.row.itemType)
+            insert.row.id
+        })
+    }
+
+    @Test
+    fun addAppRejectsMalformedIntent() {
+        val ed = WorkspaceEditor(workspace(app(1, 0, 0)))
+        assertNull(ed.addApp("", "x", CONTAINER_DESKTOP, 1))
+        assertNull(ed.addApp("com.tencent.mm", "x", CONTAINER_DESKTOP, 1)) // 缺 /activity
+    }
+
+    @Test
+    fun addAppReturnsNullWhenPageFull() {
+        val cells = (0 until 7).flatMap { y -> (0 until 4).map { x -> x to y } }
+        val items = cells.mapIndexed { i, (x, y) -> app((100 + i).toLong(), x, y) }
+        val ed = WorkspaceEditor(workspace(*items.toTypedArray()))
+        assertNull(ed.addApp("com.tencent.mm/.LauncherUI", "微信", CONTAINER_DESKTOP, 1))
+        // 换 Dock 页仍有 5 个空位
+        assertNotNull(ed.addApp("com.tencent.mm/.LauncherUI", "微信", CONTAINER_DOCK, 0))
+    }
 }

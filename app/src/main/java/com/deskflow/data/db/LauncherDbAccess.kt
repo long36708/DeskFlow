@@ -12,6 +12,7 @@ sealed class RootError(val message: String) {
     data class CopyFailed(val detail: String) : RootError("复制桌面数据库失败: $detail")
     object OpenFailed : RootError("打开数据库失败，文件可能已损坏")
     data class PushFailed(val detail: String) : RootError("写回数据库失败: $detail")
+    data class UnsupportedDesktopStyle(val detail: String) : RootError("桌面风格不受支持: $detail")
 }
 
 class RootDbException(val error: RootError) : Exception(error.message)

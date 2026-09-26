@@ -209,6 +209,27 @@ class WorkspaceEditor(private val ws: Workspace) {
         return fallback
     }
 
+    /** 从已安装应用新增一个桌面图标，落当前页首个空位；页满返回 null。 */
+    fun addApp(intent: String, title: String, container: Long, screen: Int): ItemState? {
+        if (intent.isEmpty() || !intent.contains('/')) return null
+        val free = findFreeCell(container, screen) ?: return null
+        val item = ItemState(
+            dbId = nextTempId(),
+            title = title,
+            intent = intent,
+            itemCode = ItemType.APP,
+            iconPackage = intent.substringBefore('/'),
+            iconResource = null,
+            container = container,
+            screen = screen,
+            cellX = free.first,
+            cellY = free.second,
+            isNew = true,
+        )
+        ws.items += item
+        return item
+    }
+
     // ---------- page management ----------
 
     private fun livePages(): List<ScreenPage> = ws.pages.filter { !it.isDeleted }.sortedBy { it.order }

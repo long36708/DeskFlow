@@ -19,3 +19,4 @@ Thumbs.db
 
 # Debug scratch
 ui_dump.xml
+.tmp/

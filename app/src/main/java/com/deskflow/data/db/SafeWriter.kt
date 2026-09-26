@@ -2,8 +2,10 @@ package com.deskflow.data.db
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import com.deskflow.data.adapter.vivo.UnsupportedDesktopStyleException
 import com.deskflow.data.adapter.vivo.VivoConstants
 import com.deskflow.data.adapter.vivo.VivoLauncherAdapter
+import com.deskflow.data.adapter.vivo.VivoSnapshot
 import com.deskflow.data.backup.BackupManager
 import com.deskflow.domain.layout.DbOp
 import com.deskflow.domain.layout.DiffCalculator
@@ -40,13 +42,20 @@ class SafeWriter(context: Context) {
             val work = dbAccess.pullWork()
             val db = openReadWrite(work)
             try {
-                val snapshot = adapter.read(db)
+                val snapshot = readChecked(db)
                 VivoWorkspaceHolder(snapshot.workspace, snapshot.maxId)
             } finally {
                 db.close()
             }
         }
     }
+
+    private fun readChecked(db: SQLiteDatabase): VivoSnapshot =
+        try {
+            adapter.read(db)
+        } catch (e: UnsupportedDesktopStyleException) {
+            throw RootDbException(RootError.UnsupportedDesktopStyle("当前 currentDesktop=${e.currentDesktop}，仅支持标准(1000)与抽屉(1002)"))
+        }
 
     suspend fun apply(edited: Workspace): ApplyOutcome = withContext(Dispatchers.IO) {
         var meta: FileMeta? = null
@@ -59,7 +68,7 @@ class SafeWriter(context: Context) {
             val db = openReadWrite(work)
             val plan: DiffPlan
             try {
-                val fresh = adapter.read(db)
+                val fresh = readChecked(db)
                 plan = DiffCalculator.plan(edited, fresh.maxId)
                 if (plan.ops.isEmpty()) {
                     backup.delete()

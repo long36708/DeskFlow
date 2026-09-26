@@ -311,15 +311,141 @@ Compose 按顺序复用节点，于是该图标的 `pointerInput` 节点被销�
 
 单测 63 个全绿；真机 `drag-check.py drag` 与 `tap` 双绿。
 
+## 10. 收夹切块改为「尾组不足 4 个并回上一夹」（2026-09-26）
+
+**规则（用户确认）**：同类图标仍按每夹 9 个（`GridConfig.folderCapacity`）切块，但**尾组不足 `FOLDER_MIN_ITEMS`（4）个时并回上一夹**，
+不再单独成夹。于是 12 个同类 = 一个 12 个图标的夹；13 个 = 「影音 9 个」+「影音 2 4 个」；21 个（9+9+3）= 9 + 12。
+改前的行为是 12 → 9 + 一个只有 3 个图标的小夹（只有尾组恰好 1 个时才散放桌面），与「不留小夹子」的初衷相悖。
+
+**改前实测：夹容量不是 9**（推翻了设计文档与 `GridConfig` 的 3×3 假设）。查夹 353「XP插件」现状：
+
+- vivo 自己的 a11y 描述为 `XP插件,文件夹,10个应用`，即 10 个子项是合法状态
+- 点开后 `uiautomator dump` 出来是 **3 列 × 4 行**，10 个全部渲染（第 4 行 1 个）
+- 桌面上的夹预览只画 rank 前 9 个：第 10 个「Bug」（rank 9）不出现，只有打开夹才能看到——
+  容易误读成「第 10 个丢了」。渲染顺序由 `rank` 决定，夹内 `cellX/cellY` 不参与排版
+  （该夹成员 `cellY` 已到 3，超出 3×3 仍正常显示）
+
+结论：夹是「3 列多行、可滚动」，标称容量只用于**切块**，不是硬上限。因此「一个夹装 12 个」（3 列 4 行）在设计上可行，
+但**12 个的渲染尚未实测**（本轮只验过 10 个）。
+
+**代码改动**：
+
+- `AutoArranger.slotsOf`：`chunked(capacity)` 后过 `mergeUndersizedTail()`（尾组 < `FOLDER_MIN_ITEMS` 且存在上一夹时合并），
+  删掉原来的「尾组 1 个散放桌面」分支——现在所有切块都成夹
+- `Models.kt` 注释改正：`folderCapacity` 是切块用标称容量，不是硬上限
+- `ArrangeDialog` 预览文案补「尾组不足 4 个时并回上一夹」
+
+**测试**：65 个 JVM 单测全绿（改前 63）。替换/新增覆盖：`twelveOfAKindStayInOneFolder`（12 → 单夹，并断言成员按行优先紧密排满
+cellY 0..3）、`tailSplitsOnlyWhenItFillsAFolder`（13 → 9+4 续编号）、`undersizedTailMergesIntoPreviousFolder`（21 → 9+12）、
+`xpTailMergesIntoOneFolder`（11 → 单夹，替代原「尾组 1 个散放」用例）；`arrangeFillsPagesInCategoryOrder` 的 30 个影音
+由 4 夹改为 3 夹（9/9/12）。
+
+**待真机验证（用户自行执行）**：建一个 12 个图标的夹确认第 4 行渲染正常（理论上与已验的 10 个同构）。
+
+## 11. 一键整理改为「锁定现有布局 + 只收散放图标」（2026-09-26）
+
+**规则（用户确认）**：把当前桌面当模板。`一键整理` 不再重排整张桌面，只处理「新图标」。
+
+- **原位锁死**：首页（第一张未删除页）上的全部图标、任意页上的既有文件夹、只读项（widget 等）、
+  Dock 项——保持原页原格；**首页连空格都不给新夹用**（`fixed[home] = 全部格子`）。
+- **待归类 = 散放**：非首页桌面上、既不是文件夹也不是只读项的应用/快捷方式。
+  同类达到 `FOLDER_MIN_ITEMS`（4）个就收夹（每夹 9 个、续编号、尾组 <4 并回上一夹，见第 10 节）；
+  不满 4 个或未分类的散放项**原地不动**。
+- **新夹落位**：优先用本次腾空的格子（被收走项的原位），其次非首页空位；兜底追加新页。
+- 首页之外的「页 + 格」也锁死：既有夹不再随整理挪位，散放项也不再被压缩重排。
+
+**改动**：
+
+- `AutoArranger.arrange` 重写：`isLooseApp(item, home)` 单一判据挑出候选；
+  `frozen = 桌面项 − 被收走者` 全部进占位表与预览；`layoutOf` 只铺新夹，锁定项按原位登记，
+  所以预览看到的是「原布局 + 新夹」而不是只有新夹。
+- `ArrangeResult` 删除 `pinned` / `dissolvedFolders`，新增 `looseCount` / `lockedCount`；
+  `placedCount` 改为「收进新夹的图标数」。
+- **删除 `PinnedApps.kt` 与整套钉选机制**（`pinnedItems` / `pinnedSlots` / 从夹与 Dock 强制抽出 /
+  抽空解散 / `apply` 里的解散兜底），以及为此存在的 7 个钉选用例。
+- **新夹命名跳过既有夹占用的标题**（`claimLabel`）：既有夹是锁定项、不再与新夹合并，
+  名字撞车会在桌面留下两个同名的「影音」，所以编号往后顺延（首页已有「影音」「影音 2」时，
+  新夹叫「影音 3」）。
+- `ArrangeDialog` 文案重写：标题改「按分类收拢散放图标」，删「钉选到首页」「解散文件夹」两行，
+  分类概览对不收夹的类别改显「→ 原地不动」，分页行加 `*` 标记该页含原位保留项，
+  无候选时显示「没有可归类的散放应用，桌面不会变动」。
+
+**真机数据离线核对（本机 124 个桌面项）**：页序 `1,6,8,11,9`（`screen_jan: _id|screen_order` =
+`1|0 / 6|1 / 8|2 / 11|3 / 9|4`，另有 `0|0` 是 Dock 行 `screen_container=-101`、`5|0` 是智能桌面
+`screen_container=0`，都不在 `VivoLauncherAdapter` 取的 `screen_container=-100` 集合里），首页 = screen 1。
+
+| 项 | 数 |
+|----|----|
+| 桌面项合计 | 124 |
+| 锁定（首页 28 + 非首页既有夹 9） | 37 |
+| 待归类散放应用 | 87 |
+| 新建夹 | **0** |
+| 移位 | **0** |
+
+即：**当前桌面上点一次整理是纯空操作**，与「封存现有布局」的预期一致。代价是 87 个散放项
+**全部落到「未分类」**（GKD / Shizuku / InstallerX / DSU Sideloader / ReVanced Manager /
+数据备份 / 星野Scene / 剪映 / 美图秀秀 / 什么值得买 / 铁路12306 …），而未分类不收夹。
+根因是 `DefaultRules` 关键词表偏薄，加上「散放=待归类」只处理非首页项。**关键词是否扩充待用户定**
+（扩充会真的移动这 87 项中的一部分，与「不打扰」相冲突，所以没有自行决定）。
+
+**测试**：62 个 JVM 单测全绿（改前 65）。新增覆盖：`homePageIsNeverRearranged`（首页 6 项一格不动、
+0 夹 0 移位）、`newFolderNeverLandsOnHomePage`（首页有 27 个空格也不用）、
+`existingFolderWithItsChildrenStaysPut`、`readOnlyAndDockItemsAreUntouched`（2x2 widget 占位后
+新夹落在腾空的 (2,0)）、`undersizedAndUnclassifiedLooseAppsStayPut`、
+`newFolderTakesTheVaultedCells`、`newFolderNameSkipsTitlesTakenByLockedFolders` /
+`newFolderNamesStayUniqueAcrossChunks`、`arrangingTwiceChangesNothing`（整理过一遍后二次为空操作）、
+`overCapacityFallsBackToNewPage`（1×1 退化容量下加页兜底，防死循环）。
+
+## 12. 抽屉风格适配（2026-09-27）
+
+**症状**：手机桌面从「标准风格」切到「抽屉风格」后，DeskFlow 整体失效——读到的还是切风格前的旧桌面，写回后面面无变化。
+
+**诊断**（对比线上 `launcher.db` 与 9 份标准时代备份）：
+
+- vivo 切换桌面风格**不清表、不改原数据**，而是每个风格各有一套工作区表，`launcherStyle` 无关；由 `desktopStyle` 表单行指针 `currentDesktop` 决定哪套在用：**1000=标准（`location_jan`/`screen_jan`）、1002=抽屉（`location_jan_drawer`/`screen_jan_drawer`）**。该映射系单台 X200 实测（备份均为 1000、切风格后线上为 1002），非官方文档语义。
+- 抽屉线上表组实测：桌面仅 1 页 19 图标 + Dock 4 项 + 系统「工具」夹（`_id=0`）；`location_jan` 324 行原封不动躺在库里。App 硬编码 `location_jan` → 读写的是**不再显示的备用表**，这就是失效根因。
+- `_id` 跨样式表共享命名空间：切抽屉时复用原 id（`应用商店`两风格下都是 `_id=10`；抽屉表 MAX=35 而标准表 MAX=361）；`attribute`（318 行）跨风格共享、切风格未动。**新行 id 必须取全部 `location_*` 表 + `attribute` 的全局 MAX+1**，按在用表单算会撞备用表占号（如 36 撞标准表第 36 行）。
+- `location_allapps`（抽屉全部应用表）实测 **0 行**：抽屉里"全部应用"清单不落 DB（由 launcher 按 PackageManager 现生成），**改库排不了抽屉页**——路线图里"抽屉页编辑"目标就此证伪。
+- 抽屉桌面只有 1 页 ⇒ 所有图标都是首页锁定项 ⇒ 一键整理=纯空操作。这是语义设计（第 11 节）的直接推论，不是 bug。
+
+**实现**：
+
+- `VivoDesktopStyles.resolve()`：null（无 `desktopStyle` 表或值为 NULL，按旧版处理）/1000→标准，1002→抽屉，**其余值抛 `UnsupportedDesktopStyleException` 拒绝写库**，错误经 `RootError.UnsupportedDesktopStyle` 上屏并带 `currentDesktop` 实际值。
+- `VivoLauncherAdapter` 全部 SQL（read/apply/insert/insertScreen/readScreens/readPositions/readTitles）经 `resolveTables(db)` 选表；`globalMaxId()` 用 `sqlite_master` 收集全部 `location_*` + `attribute` 表做 UNION MAX。
+- 标准风格回归确认：1000/表缺失路径解析结果与改造前逐字一致；唯一差异是 id 分配更保守（全局 MAX 恒 ≥ 原单表 MAX）与未知值从静默误写改为报错。
+
+**回滚点与备份**：写库前用 root `cat` 拉线上抽屉态 DB（`.tmp/ld2.db`）；App 内置备份只在「采用」时生成，当前列表里全部是标准时代的，**还原旧备份=连样式指针一起切回标准桌面**（自洽但会覆盖抽屉态，勿手滑）。
+
+**测试**：新增 `DrawerTest` 4 例（样式映射含未知值拒绝、跨表 id 分配、单页桌面空操作语义、多页散放收夹），共 66 例全绿；`adb install -r` 已装机（10AF59276U006BH），真机点按验证由用户执行中。
+
+## 13. 添加应用到桌面（2026-09-27）
+
+抽屉风格下桌面只剩钉选的 19 个图标，全部应用清单不落库（12 节：`location_allapps` 实测空表），
+「把应用放上台面」只能走系统长按抽屉项添加，或 DeskFlow 自己插行。实测 vivo 桌面行的写入格式极简：
+`intent = "pkg/activity"`、`itemType = 30`、`rank = 0`（标准表 115/125 桌面行 rank=0，
+少数非零系拖拽残留、语义未证明；夹内子项 rank 0..n 连号但与 cellX/Y 顺序一致，
+收夹链路只写 cell 已多次真机验证正常——**rank 非显示必要条件**，新行写 0 即可）。
+
+实现：`WorkspaceEditor.addApp`（当前页首个空位，页满拒绝）+ ViewModel 应用清单
+（`queryIntentActivities` MAIN/LAUNCHER，manifest 已有 `<queries>` 无需新权限；Collator 按拼音排序、
+label/包名过滤、已在桌面的置灰）+ 「更多 → 添加应用」选择对话框（图标异步加载缓存）。
+走既有 `DbOp.Insert` 链路，id 取全局 MAX+1（12 节），标准/抽屉两风格通用（表由 `resolveTables` 选）。
+撤销、二次确认、写后验证全部复用现有机制。单测 +3（落位与 INSERT 内容、畸形 intent 拒绝、页满兜底 Dock），共 69 例。
+
 ## 下一步
 
 - 改动编辑器手势/网格渲染后，跑 `python scripts/drag-check.py drag` 与 `tap` 做回归（JVM 单测覆盖不到手势）
-- 真机验证本轮：一键整理收夹效果、文件夹改名是否被 vivo 保留（改名保留已于 7 节真机验证确认）
-- 收夹是否改成按页配额（避免桌面塌缩，见 6 节末）
+- 真机验证本轮（APK 已 `adb install -r` 到 10AF59276U006BH，待点按）：点一次「一键整理」，预览应显示
+  「待归类 87 项 · 收进 0 项 · 124 项保持原位不动」、「将新建 0 个文件夹」；采用后桌面**一格都不该动**
+  （这是本轮改动的核心判据；锁定项回写的是原坐标，`DiffCalculator` 不产生 op，故应用本身是纯空操作）
+- 定 87 个未分类散放项怎么办：扩关键词表 / 允许未分类收夹 / 保持纯不打扰（见 11 节）
+- 真机验证 12 子项夹的第 4 行渲染（见 10 节）
+- 收夹是否改成按页配额（见 6 节末；11 节改语义后桌面不再塌缩，此项优先级下降）
 - 桌面图标标题重命名（vivo 采用 `location_jan.title` 已由文件夹改名实测确认，可直接做；
   注意未解析的 `folder_name` 会被回填成首个子项名，见 9 节）
 - 按使用频率归页（需 usage stats 权限，尚未调研）
-- 抽屉页（`location_jan_drawer`）编辑
+- ~~抽屉页（`location_jan_drawer`）编辑~~ → 已由 12 节完成表适配；「全部应用」页改库不可行（`location_allapps` 实测空表）
+- 真机验证 12 节（APK 已 `adb install -r`）：抽屉桌面上重新读取应见 19 图标 + Dock；拖一格采用后改动应落在 `location_jan_drawer`，`location_jan` 应零变化
 
 ---
 

@@ -39,6 +39,9 @@ import kotlinx.coroutines.withContext
 
 enum class Phase { Loading, Ready, Applying, NoRoot, Error }
 
+/** 应用选择列表的一行：intent 即 vivo 桌面行的 `pkg/activity` 组件格式。 */
+data class AppEntry(val intent: String, val label: String, val pkg: String)
+
 const val DOCK_PAGE_ID = -101
 
 private const val ICON_PX = 128
@@ -58,6 +61,8 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
     var confirmDelete by mutableStateOf<ItemState?>(null)
     var renameTarget by mutableStateOf<ItemState?>(null)
     var showBackups by mutableStateOf(false)
+    var showAppPicker by mutableStateOf(false)
+    var appQuery by mutableStateOf("")
     var arrangePreview by mutableStateOf<ArrangeResult?>(null)
     var showPages by mutableStateOf(false)
     var showSearch by mutableStateOf(false)
@@ -274,6 +279,69 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
         revision++
     }
 
+    // ---------- app picker（添加应用到桌面） ----------
+
+    private var appEntriesCache: List<AppEntry>? = null
+    private val appIconCache = mutableMapOf<String, ImageBitmap?>()
+
+    fun appEntries(): List<AppEntry> {
+        appEntriesCache?.let { return it }
+        val launcherIntent = android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+        val collator = java.text.Collator.getInstance(java.util.Locale.CHINA)
+        val entries = pm.queryIntentActivities(launcherIntent, 0)
+            .mapNotNull { ri ->
+                val info = ri.activityInfo ?: return@mapNotNull null
+                AppEntry(intent = "${info.packageName}/${info.name}", label = ri.loadLabel(pm).toString(), pkg = info.packageName)
+            }
+            .distinctBy { it.intent }
+            .sortedWith { a, b -> collator.compare(a.label, b.label) }
+        appEntriesCache = entries
+        return entries
+    }
+
+    /** 已在桌面上的 intent；选择列表据此置灰。 */
+    fun desktopIntents(): Set<String> =
+        workspace?.liveItems?.map { it.intent }?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+
+    fun filteredAppEntries(): List<AppEntry> {
+        val q = appQuery.trim().lowercase()
+        val all = appEntries()
+        if (q.isEmpty()) return all
+        return all.filter { it.label.lowercase().contains(q) || it.pkg.lowercase().contains(q) }
+    }
+
+    suspend fun appIcon(intent: String): ImageBitmap? = withContext(Dispatchers.IO) {
+        appIconCache.getOrPut(intent) {
+            val idx = intent.lastIndexOf('/')
+            if (idx <= 0) null
+            else runCatching {
+                pm.getActivityIcon(ComponentName(intent.substring(0, idx), intent.substring(idx + 1)))
+                    .toBitmap(ICON_PX, ICON_PX).asImageBitmap()
+            }.getOrNull()
+        }
+    }
+
+    fun addAppToDesktop(entry: AppEntry) {
+        if (desktopIntents().contains(entry.intent)) {
+            message = "「${entry.label}」已在桌面上"
+            return
+        }
+        val (container, screen) = containerForPage()
+        var added = false
+        edit { ed ->
+            added = ed.addApp(entry.intent, entry.label, container, screen) != null
+            added
+        }
+        if (!added) {
+            message = if (isDockPage()) "Dock 已满" else "该页已满：切到其它页再添加，或先在「页面」里新增一页"
+            return
+        }
+        showAppPicker = false
+        val pageLabel = if (isDockPage()) "Dock"
+        else "第${visiblePages().indexOfFirst { it.screenId == currentScreenId } + 1}页"
+        message = "已添加「${entry.label}」到${pageLabel}，点『应用』写入桌面"
+    }
+
     fun undo() {
         val h = history ?: return
         if (!h.undo()) {
@@ -356,9 +424,9 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
         arrangePreview = null
         selected = null
         message = buildString {
-            append("已按分类重排 ${result.placedCount} 项（${result.movedCount} 项移位）")
-            if (result.newFolderCount > 0) append("；新建 ${result.newFolderCount} 个文件夹")
+            append("已收拢 ${result.placedCount} 项进 ${result.newFolderCount} 个文件夹")
             if (result.newScreens.isNotEmpty()) append("；新增 ${result.newScreens.size} 页")
+            append("，${result.lockedCount} 项原位不动")
             append("，点『应用』写入桌面")
         }
     }
