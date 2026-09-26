@@ -316,6 +316,11 @@ Compose 按顺序复用节点，于是该图标的 `pointerInput` 节点被销�
 - 改动编辑器手势/网格渲染后，跑 `python scripts/drag-check.py drag` 与 `tap` 做回归（JVM 单测覆盖不到手势）
 - 真机验证本轮：一键整理收夹效果、文件夹改名是否被 vivo 保留（改名保留已于 7 节真机验证确认）
 - 收夹是否改成按页配额（避免桌面塌缩，见 6 节末）
-- 桌面图标标题重命名（需先调研 vivo 是否采用 `location_jan.title`）
+- 桌面图标标题重命名（vivo 采用 `location_jan.title` 已由文件夹改名实测确认，可直接做；
+  注意未解析的 `folder_name` 会被回填成首个子项名，见 9 节）
 - 按使用频率归页（需 usage stats 权限，尚未调研）
 - 抽屉页（`location_jan_drawer`）编辑
+
+---
+
+经验教训汇总（调试判据可信性、Compose 列表顺序、外部事实需实机核对等）见 [lessons-learned.md](lessons-learned.md)。
