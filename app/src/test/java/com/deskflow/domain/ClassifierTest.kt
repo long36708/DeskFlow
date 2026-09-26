@@ -142,6 +142,26 @@ class ClassifierTest {
         )
     }
 
+    @Test
+    fun pinnedAppWinsOverItsCategoryFolder() {
+        val modules = (1L..4L).map { app(it, "com.example.xposed$it", "模块$it") }
+        val lsposed = app(20L, "org.lsposed.manager", "LSPosed")
+        val ws = workspace(listOf(1), *(modules + lsposed).toTypedArray())
+        val rules = DefaultRules.rules.merge(
+            CategoryRules(
+                keywords = mapOf("xposed" to Category.XP),
+                exactPackages = mapOf("org.lsposed.manager" to Category.XP),
+            )
+        )
+        val result = AutoArranger.arrange(ws, rules)
+
+        // 钉选优先于分类：LSPosed 上首页，不折进自己类别的夹
+        assertEquals(listOf("LSPosed"), result.pinned.map { it.title })
+        val folder = result.pages[0].placements.single { it.isNewFolder }
+        assertEquals(4, folder.members.size)
+        assertTrue(folder.members.none { it.dbId == 20L })
+    }
+
     // ---------- arrangement ----------
 
     @Test
