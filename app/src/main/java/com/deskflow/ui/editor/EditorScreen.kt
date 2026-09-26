@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.deskflow.DOCK_PAGE_ID
 import com.deskflow.ui.DeskFlowViewModel
 import com.deskflow.ui.Phase
@@ -317,8 +318,9 @@ private fun WorkGrid(
             for (i in 1 until rows) drawLine(Color(0x22888888), Offset(0f, ch * i), Offset(size.width, ch * i), 1f)
         }
 
-        val ordered = pageItems.filter { it !== dragItem } + listOfNotNull(dragItem)
-        ordered.forEach { item ->
+        // 遍历顺序必须稳定：把被拖项挪到末尾会让它的 pointerInput 节点被销毁重建，
+        // 拖拽协程在 onDragStart 当帧就被取消（表现为长按拖拽完全无反应）。提层改用 zIndex。
+        pageItems.forEach { item ->
             val dragging = dragItem === item
             val xPx = (item.cellX * cellW + if (dragging) dragOffset.x.roundToInt() else 0)
             val yPx = (item.cellY * cellH + if (dragging) dragOffset.y.roundToInt() else 0)
@@ -331,6 +333,7 @@ private fun WorkGrid(
                 dragging = dragging,
                 selected = vm.selected === item,
                 modifier = Modifier
+                    .zIndex(if (dragging) 1f else 0f)
                     .offset { IntOffset(xPx, yPx) }
                     .size(wDp, hDp)
                     .pointerInput(item, cellW, cellH) {
