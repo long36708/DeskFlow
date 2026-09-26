@@ -79,9 +79,9 @@ data class ArrangeResult(
 /**
  * 桌面页重排：按类别分组，同类图标（未分类除外，且数量达到 [FOLDER_MIN_ITEMS]）收进以类别命名的文件夹，
  * 再按类别顺序铺满各页（行优先）。一个类别装进多夹时续编号「影音 2」。
- * 只读项（widget 等）保持原位并占位，Dock 不参与重排，既有文件夹整体移动且不并入新夹；
- * 钉选应用（[PinnedApps]）例外，会从文件夹 / Dock 抽出到首页。
- * 钉选应用（[PinnedApps]）不参与分类与收夹，排在所有文件夹之后按固定顺序铺上首页。
+ * 只读项（widget 等）保持原位并占位，既有文件夹整体移动且不并入新夹；未钉选的 Dock 项不参与重排。
+ * 钉选应用（[PinnedApps]）是例外：不参与分类分组与收夹，会从既有文件夹 / Dock 抽出，
+ * 排在所有文件夹槽之后按固定顺序铺上首页。
  */
 object AutoArranger {
 
@@ -188,15 +188,18 @@ object AutoArranger {
     private fun pinnedSlots(pinned: List<ItemState>, rules: CategoryRules): List<Slot> =
         pinned.map { Slot(categoryOf(it, rules), listOf(it), "") }
 
-    /** 全 workspace 按包名找钉选项：跳过只读项与文件夹，重复包名只取第一个。 */
+    /** 全 workspace 按包名找钉选项：跳过只读项与文件夹，重复包名优先取桌面上的那份。 */
     private fun pinnedItems(ws: Workspace): List<ItemState> {
+        val wanted = PinnedApps.packages.map { it.lowercase() }
         val found = HashMap<String, ItemState>()
-        ws.liveItems.forEach { item ->
+        // 同包名多处时优先取桌面实例：抽走 Dock 里的那份会留下空洞，桌面那份反而被收进夹
+        val candidates = ws.liveItems.sortedBy { if (it.container == CONTAINER_DESKTOP) 0 else 1 }
+        candidates.forEach { item ->
             if (item.readOnly || item.isFolder) return@forEach
             val pkg = item.componentPackage()?.lowercase()?.trim() ?: return@forEach
-            if (pkg !in found && pkg in PinnedApps.packages) found[pkg] = item
+            if (pkg !in found && pkg in wanted) found[pkg] = item
         }
-        return PinnedApps.packages.mapNotNull { found[it] }
+        return wanted.mapNotNull { found[it] }
     }
 
     /** 首个文件夹用类别名，之后的续编号：影音 / 影音 2 / 影音 3。 */

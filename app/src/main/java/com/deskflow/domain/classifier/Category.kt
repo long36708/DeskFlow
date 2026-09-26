@@ -60,7 +60,8 @@ object DefaultRules {
             "com.tencent.qqlive" to Category.MEDIA,
             "com.ss.android.ugc.aweme" to Category.MEDIA,
             "com.smile.gifmaker" to Category.MEDIA,
-            "com.eg.android.AlipayGphone" to Category.FINANCE,
+            // classify 会把被查包名小写化，键必须全小写才能命中（AlipayGphone 含大写 G）
+            "com.eg.android.alipaygphone" to Category.FINANCE,
             "com.android.settings" to Category.SYSTEM,
             "com.android.systemui" to Category.SYSTEM,
             "com.bbk.launcher2" to Category.SYSTEM,

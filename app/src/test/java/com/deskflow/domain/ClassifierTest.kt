@@ -128,6 +128,20 @@ class ClassifierTest {
         assertEquals(4, xp.members.size)
     }
 
+    @Test
+    fun xpOverflowGetsNumberedFolders() {
+        // 11 = 9 + 2：尾组剩 1 项时刻意不散放成夹（slotsOf 设计），故取 11 才能出现「XP插件 2」
+        val modules = (1L..11L).map { app(it, "com.example.xposed$it", "模块$it") }
+        val ws = workspace(listOf(1), *modules.toTypedArray())
+        val rules = DefaultRules.rules.merge(CategoryRules(keywords = mapOf("xposed" to Category.XP)))
+        val result = AutoArranger.arrange(ws, rules)
+
+        assertEquals(
+            listOf("XP插件", "XP插件 2"),
+            result.pages[0].placements.filter { it.isNewFolder }.map { it.item.title },
+        )
+    }
+
     // ---------- arrangement ----------
 
     @Test
@@ -443,5 +457,30 @@ class ClassifierTest {
         AutoArranger.apply(ws, result, WorkspaceEditor(ws))
         assertEquals(CONTAINER_DESKTOP, qq.container)
         assertEquals(0 to 0, qq.cellX to qq.cellY)
+    }
+
+    @Test
+    fun pinnedPackageMatchingIsCaseInsensitive() {
+        val alipay = app(1L, "com.eg.android.AlipayGphone", "支付宝")
+        val ws = workspace(listOf(1), alipay)
+        val result = AutoArranger.arrange(ws)
+
+        assertEquals(listOf("支付宝"), result.pinned.map { it.title })
+        assertEquals(Category.FINANCE, AppClassifier.classify(alipay))
+    }
+
+    @Test
+    fun duplicatePinnedPrefersDesktopOverDock() {
+        val dock = app(1L, "com.tencent.mobileqq", "QQdock", container = CONTAINER_DOCK, screen = 0, x = 2, y = 0)
+        val desktop = app(2L, "com.tencent.mobileqq", "QQ", x = 3, y = 3)
+        val ws = workspace(listOf(1), dock, desktop)
+        val result = AutoArranger.arrange(ws)
+
+        // 同包名优先钉桌面上那份，Dock 里的保持原位不被掏空
+        assertEquals(listOf(2L), result.pinned.map { it.dbId })
+        AutoArranger.apply(ws, result, WorkspaceEditor(ws))
+        assertEquals(CONTAINER_DOCK, dock.container)
+        assertEquals(2, dock.cellX)
+        assertEquals(CONTAINER_DESKTOP, desktop.container)
     }
 }

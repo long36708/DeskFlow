@@ -207,12 +207,28 @@ UI：TopAppBar 新增「整理」→ `ui/arrange/ArrangeDialog` 预览（移位�
   页满成员兜底 `placeFirstFree`，无处安放才删除，与手删夹行为一致）
 - 单测 59 个全绿（新增 9：XP 类别与标签认领/映射规则/≥4 收夹、钉选顺序/缺失跳过/去重、
   抽出解散/夹保留/Dock 抽出；6 个既有用例换用非钉选包名保持原意）
+- 终审修复（2026-09-26）：
+  1. **钉选包名大小写敏感**（Critical）：`pinnedItems` 对被查包名做了 lowercase 却与
+     `PinnedApps.packages` 原样列表比对，`com.eg.android.AlipayGphone`（含大写 G）永不命中
+     → 改为先把 wanted 列表整体 lowercase 再比对；`DefaultRules.exactPackages` 的支付宝键
+     同步改全小写（`AppClassifier.classify` 同样小写化被查包名；JSON 映射表无碍，
+     `CategoryMappingLoader` 读入时已 lowercase 键）
+  2. **同包名多处时优先取桌面实例**：候选按「桌面在前」稳定排序后再去重，避免抽走 Dock
+     里的那份留下空洞、桌面那份反而被收进夹（`duplicatePinnedPrefersDesktopOverDock` 锁定）
+  3. **预览口径统一**：`total` 计入钉选项（与 placedCount/movedCount 一致）；新增「钉选到
+     首页 N 项；解散 N 个被抽空的文件夹」提示行；说明文案改为「widget 与未钉选的 Dock 项
+     不参与重排…（被钉选项抽空后剩不到 2 项时解散）」
+  4. `AutoArranger` KDoc 中重复的两段钉选描述合并为一句；补 XP 续编号用例（11 项 → 「XP插件」
+     +「XP插件 2」，尾组只剩 1 项时刻意不成夹）
+  5. 单测 62 个全绿（59 + 新 3），`build_debug.bat` 通过
 
 ### 待真机验证
 
 1. 一键整理后首页是否为「夹 → 7 钉选 → 其它」；RikkaHub 包名 `cc.rikka.rikkahub` 是否与实机一致
    （不一致时该应用被静默跳过，改 `PinnedApps.packages` 即可）
 2. XP 模块（按 JSON 规则命中）是否正确收进「XP插件」夹
+3. 支付宝（`com.eg.android.AlipayGphone`）与 RikkaHub 是否真的出现在首页第一行
+   （本轮修复前支付宝因大小写问题从未钉上成功）
 
 ## 下一步
 
