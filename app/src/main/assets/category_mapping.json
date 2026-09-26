@@ -1,0 +1,22 @@
+{
+  "exactPackages": {
+    "com.tencent.mm": "social",
+    "com.eg.android.AlipayGphone": "finance",
+    "com.ss.android.ugc.aweme": "media",
+    "org.lsposed.manager": "xp",
+    "de.robv.android.xposed.installer": "xp"
+  },
+  "keywords": {
+    "vshop": "shopping",
+    "tmgp": "game",
+    "xposed": "xp",
+    "lsposed": "xp",
+    "edxposed": "xp",
+    "zygisk": "xp",
+    "riru": "xp"
+  },
+  "titleKeywords": {
+    "搞机": "tools",
+    "模块": "xp"
+  }
+}
