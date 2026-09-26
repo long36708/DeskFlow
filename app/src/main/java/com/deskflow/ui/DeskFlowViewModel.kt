@@ -358,7 +358,7 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
         message = buildString {
             append("已按分类重排 ${result.placedCount} 项（${result.movedCount} 项移位）")
             if (result.newFolderCount > 0) append("；新建 ${result.newFolderCount} 个文件夹")
-            if (result.unplaced.isNotEmpty()) append("；${result.unplaced.size} 项页面不足未安排")
+            if (result.newScreens.isNotEmpty()) append("；新增 ${result.newScreens.size} 页")
             append("，点『应用』写入桌面")
         }
     }

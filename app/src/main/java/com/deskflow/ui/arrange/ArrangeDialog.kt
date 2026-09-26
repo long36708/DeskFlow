@@ -49,11 +49,11 @@ fun ArrangeDialog(vm: DeskFlowViewModel, result: ArrangeResult, onDismiss: () ->
                         modifier = Modifier.padding(top = 2.dp),
                     )
                 }
-                if (result.unplaced.isNotEmpty()) {
+                if (result.newScreens.isNotEmpty()) {
                     Text(
-                        "页面不足：${result.unplaced.size} 项放不下，将保持原位",
+                        "格子不够，将新增 ${result.newScreens.size} 页承接余下的图标",
                         fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 2.dp),
                     )
                 }
                 Text(

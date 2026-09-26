@@ -10,6 +10,9 @@ import com.deskflow.domain.model.Workspace
 /** 同类图标达到该数量才收进文件夹，否则桌面会被两两成的小夹子占满。 */
 const val FOLDER_MIN_ITEMS = 4
 
+/** 排布计划里待新建页的临时 screenId 起点；避开桌面(-100)/Dock(-101) 等保留值，apply 时换成真实 id。 */
+private const val TEMP_SCREEN_START = -200
+
 data class Placement(
     val item: ItemState,
     val screen: Int,
@@ -45,12 +48,13 @@ data class ArrangedPage(val screenId: Int, val placements: List<Placement>) {
 
 data class ArrangeResult(
     val pages: List<ArrangedPage>,
-    val unplaced: List<ItemState>,
     val groups: List<Pair<Category, List<ItemState>>>,
     /** 钉选到首页的应用，按 PinnedApps 顺序，只含实际存在的。 */
     val pinned: List<ItemState> = emptyList(),
     /** 因钉选抽出而剩余成员 <2、将被解散的既有文件夹。 */
     val dissolvedFolders: List<ItemState> = emptyList(),
+    /** 现有页铺满后追加的待新建页（临时负 screenId，[apply] 时换成真实 id），按顺序排在最后。 */
+    val newScreens: List<Int> = emptyList(),
 ) {
     val placedCount: Int get() = pages.sumOf { page -> page.placements.sumOf { it.iconCount } }
 
@@ -79,6 +83,7 @@ data class ArrangeResult(
 /**
  * 桌面页重排：按类别分组，同类图标（未分类除外，且数量达到 [FOLDER_MIN_ITEMS]）收进以类别命名的文件夹，
  * 再按类别顺序铺满各页（行优先）。一个类别装进多夹时续编号「影音 2」。
+ * 现有页铺满时自动追加新页（排在最后），所以整理不会丢下「放不下」的项。
  * 只读项（widget 等）保持原位并占位，既有文件夹整体移动且不并入新夹；未钉选的 Dock 项不参与重排。
  * 钉选应用（[PinnedApps]）是例外：不参与分类分组与收夹，会从既有文件夹 / Dock 抽出，
  * 排在所有文件夹槽之后按固定顺序铺上首页。
@@ -88,7 +93,7 @@ object AutoArranger {
     fun arrange(ws: Workspace, rules: CategoryRules = DefaultRules.rules): ArrangeResult {
         val grid = ws.grid
         // 已标记删除（尚未写库）的页不能参与排布，否则图标会被塞进用户看不见的页
-        val screenIds = ws.pages.filter { !it.isDeleted }.map { it.screenId }
+        val screenIds = ws.pages.filter { !it.isDeleted }.map { it.screenId }.toMutableList()
         val pinned = pinnedItems(ws)
         val pinnedSet = pinned.toHashSet()
         val dissolved = ArrayList<ItemState>()
@@ -129,30 +134,23 @@ object AutoArranger {
             slots.partition { it.folderTitle.isNotEmpty() || it.members.single().isFolder }
         val ordered = folderSlots + pinnedSlots(pinned, rules) + looseSlots
 
-        // 放不下而保持原位的图标仍占着原来的格子；把它们标成占位后重排，否则会和已排好的图标重叠。
-        // 每轮只会新增占位格（格子有限），故必然收敛
-        var blocked = emptyMap<Int, Set<Long>>()
-        var laid = layoutOf(screenIds, grid, fixed, blocked, ordered)
-        while (laid.unplaced.isNotEmpty()) {
-            val next = merge(blocked, originalCells(screenIds, laid.unplaced))
-            if (next == blocked) break // 占位已收敛，说明确实放不下，保持现状
-            blocked = next
-            laid = layoutOf(screenIds, grid, fixed, blocked, ordered)
-        }
-
-        return ArrangeResult(laid.pages, laid.unplaced, groups, pinned, dissolved)
+        val laid = layoutOf(screenIds, grid, fixed, ordered)
+        return ArrangeResult(laid.pages, groups, pinned, dissolved, laid.newScreens)
     }
 
-    /** 把排布结果写回 workspace：先解散被抽空的夹，单项改坐标，文件夹槽位经编辑器真正建行并把成员收进去。 */
+    /** 把排布结果写回 workspace：先解散被抽空的夹、追加新页，单项改坐标，文件夹槽位经编辑器真正建行并把成员收进去。 */
     fun apply(ws: Workspace, result: ArrangeResult, editor: WorkspaceEditor) {
         result.dissolvedFolders.forEach { it.isDeleted = true }
+        val screenMap = HashMap<Int, Int>()
+        result.newScreens.forEach { temp -> editor.addPage()?.let { screenMap[temp] = it.screenId } }
         result.pages.forEach { page ->
+            val sid = screenMap[page.screenId] ?: page.screenId
             page.placements.forEach { pl ->
                 if (pl.isNewFolder) {
-                    editor.createFolderAt(pl.cellX, pl.cellY, CONTAINER_DESKTOP, pl.screen, pl.members, pl.item.title)
+                    editor.createFolderAt(pl.cellX, pl.cellY, CONTAINER_DESKTOP, sid, pl.members, pl.item.title)
                 } else {
                     pl.item.container = CONTAINER_DESKTOP
-                    pl.item.screen = pl.screen
+                    pl.item.screen = sid
                     pl.item.cellX = pl.cellX
                     pl.item.cellY = pl.cellY
                 }
@@ -213,36 +211,38 @@ object AutoArranger {
 
     // ---------- layout ----------
 
-    private class LaidOut(val pages: List<ArrangedPage>, val unplaced: List<ItemState>)
+    private class LaidOut(val pages: List<ArrangedPage>, val newScreens: List<Int>)
 
+    /**
+     * 行优先逐格铺放。现有页铺满就追加待新建页（临时负 id，[apply] 换成真实 screenId），
+     * 因此不存在「放不下的项」——桌面格子不够时由新页承接。
+     */
     private fun layoutOf(
-        screenIds: List<Int>,
+        screenIds: MutableList<Int>,
         grid: GridConfig,
         fixed: Map<Int, Set<Long>>,
-        blocked: Map<Int, Set<Long>>,
         slots: List<Slot>,
     ): LaidOut {
         val occupancy = LinkedHashMap<Int, MutableSet<Long>>()
-        screenIds.forEach { sid ->
-            occupancy[sid] = HashSet<Long>().apply {
-                addAll(fixed[sid] ?: emptySet())
-                addAll(blocked[sid] ?: emptySet())
-            }
-        }
+        screenIds.forEach { sid -> occupancy[sid] = HashSet<Long>().apply { addAll(fixed[sid] ?: emptySet()) } }
         val byScreen = LinkedHashMap<Int, MutableList<Placement>>()
         screenIds.forEach { byScreen[it] = ArrayList() }
-        val unplaced = ArrayList<ItemState>()
+        val newScreens = ArrayList<Int>()
         var pageIdx = 0
 
         for (slot in slots) {
-            var placed = false
-            while (pageIdx < screenIds.size && !placed) {
+            while (true) {
+                if (pageIdx >= screenIds.size) {
+                    val sid = TEMP_SCREEN_START - newScreens.size
+                    screenIds += sid
+                    occupancy[sid] = HashSet()
+                    byScreen[sid] = ArrayList()
+                    newScreens += sid
+                }
                 val sid = screenIds[pageIdx]
                 val taken = occupancy.getValue(sid)
                 val cell = firstFree(grid.columns, grid.rows, taken)
-                if (cell == null) {
-                    pageIdx++
-                } else {
+                if (cell != null) {
                     taken += cellKey(cell.first, cell.second)
                     val newFolder = slot.folderTitle.isNotEmpty()
                     byScreen.getValue(sid) += Placement(
@@ -253,12 +253,12 @@ object AutoArranger {
                         category = slot.category,
                         members = if (newFolder) slot.members else emptyList(),
                     )
-                    placed = true
+                    break
                 }
+                pageIdx++
             }
-            if (!placed) unplaced += slot.members
         }
-        return LaidOut(screenIds.map { ArrangedPage(it, byScreen.getValue(it)) }, unplaced)
+        return LaidOut(screenIds.map { ArrangedPage(it, byScreen.getValue(it)) }, newScreens)
     }
 
     /** 文件夹槽位的占位对象：只带标题，不落库、不进 workspace。 */
@@ -275,28 +275,6 @@ object AutoArranger {
         cellY = 0,
         isNew = true,
     )
-
-    private fun merge(base: Map<Int, Set<Long>>, extra: Map<Int, Set<Long>>): Map<Int, Set<Long>> {
-        val out = HashMap<Int, MutableSet<Long>>()
-        (base.keys + extra.keys).forEach { sid ->
-            out[sid] = HashSet<Long>().apply {
-                addAll(base[sid] ?: emptySet())
-                addAll(extra[sid] ?: emptySet())
-            }
-        }
-        return out
-    }
-
-    /** 未安排项的原始终态格子：它们会留在原地，必须从可用格子里扣掉。 */
-    private fun originalCells(screenIds: List<Int>, items: List<ItemState>): Map<Int, Set<Long>> {
-        val out = HashMap<Int, MutableSet<Long>>()
-        items.forEach { item ->
-            if (item.originalContainer != CONTAINER_DESKTOP) return@forEach
-            if (item.originalScreen !in screenIds) return@forEach
-            out.getOrPut(item.originalScreen) { HashSet() } += cellKey(item.originalX, item.originalY)
-        }
-        return out
-    }
 
     private fun cellKey(x: Int, y: Int): Long = y.toLong() * 1000 + x
 

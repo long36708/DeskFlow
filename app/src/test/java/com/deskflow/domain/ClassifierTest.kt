@@ -173,7 +173,7 @@ class ClassifierTest {
 
         // 影音 30 → 4 夹（9/9/9/3），游戏 5 → 1 夹：35 个图标只占 5 格，一页就装得下
         assertEquals(35, result.placedCount)
-        assertEquals(0, result.unplaced.size)
+        assertTrue(result.newScreens.isEmpty())
         assertEquals(5, result.newFolderCount)
         assertEquals(5, result.pages[0].placements.size)
         assertEquals(0, result.pages[1].placements.size)
@@ -192,7 +192,7 @@ class ClassifierTest {
         // 25 个同类图标收进 3 个文件夹，只占 3 格，因此不再放不下
         assertEquals(25, result.placedCount)
         assertEquals(3, result.newFolderCount)
-        assertEquals(0, result.unplaced.size)
+        assertTrue(result.newScreens.isEmpty())
         val forbidden = setOf(0 to 0, 1 to 0, 0 to 1, 1 to 1)
         assertTrue(result.pages[0].placements.none { (it.cellX to it.cellY) in forbidden })
         // widget 本身不在重排结果里
@@ -200,8 +200,8 @@ class ClassifierTest {
     }
 
     @Test
-    fun arrangeReservesCellsOfUnplacedItems() {
-        // 未分类不收夹：一页放不下时余下的保持原位，但它们原来的格子必须让出来
+    fun arrangeAddsPagesWhenCellsRunOut() {
+        // 未分类不收夹：一页 28 格装不下 31 个散图标，余下的 3 个由自动新增的页承接
         val apps = (1L..31L).map {
             val slot = (it - 1) % 28
             app(it, "com.unknown.pkg$it", "未知$it", x = (slot % 4).toInt(), y = (slot / 4).toInt())
@@ -210,12 +210,25 @@ class ClassifierTest {
         val result = AutoArranger.arrange(ws)
 
         assertEquals(0, result.newFolderCount)
-        assertTrue(result.unplaced.isNotEmpty())
-        assertEquals(31, result.placedCount + result.unplaced.size)
-        val placedCells = result.pages[0].placements.map { it.cellY * 1000L + it.cellX }.toSet()
-        result.unplaced.forEach {
-            assertFalse(it.originalY * 1000L + it.originalX in placedCells)
-        }
+        assertEquals(31, result.placedCount)
+        assertEquals(1, result.newScreens.size)
+        assertEquals(2, result.pages.size)
+        assertEquals(28, result.pages[0].placements.size)
+        assertEquals(3, result.pages[1].placements.size)
+        assertEquals(
+            listOf(0 to 0, 1 to 0, 2 to 0),
+            result.pages[1].placements.map { it.cellX to it.cellY },
+        )
+
+        AutoArranger.apply(ws, result, WorkspaceEditor(ws))
+        // 临时负 id 必须换成真实页 id，且落库后每格一项
+        val newPage = ws.pages.single { it.isNew }
+        assertTrue(newPage.screenId >= 0)
+        assertEquals(3, ws.pageItems(newPage.screenId).size)
+        assertEquals(28, ws.pageItems(1).size)
+        val cells = ws.liveItems.filter { it.container == CONTAINER_DESKTOP }
+            .map { it.screen to (it.cellY * 1000L + it.cellX) }
+        assertEquals(cells.size, cells.toSet().size)
     }
 
     @Test
