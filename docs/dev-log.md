@@ -221,13 +221,17 @@ UI：TopAppBar 新增「整理」→ `ui/arrange/ArrangeDialog` 预览（移位�
   4. `AutoArranger` KDoc 中重复的两段钉选描述合并为一句；补 XP 续编号用例（11 项 → 「XP插件」
      +「XP插件 2」，尾组只剩 1 项时刻意不成夹）
   5. 单测 62 个全绿（59 + 新 3），`build_debug.bat` 通过
+- 实机包名核对（设备 10AF59276U006BH，`pm list packages`）：7 个钉选包名中 RikkaHub 实际为
+  `me.rerere.rikkahub`（原按 `cc.rikka.rikkahub` 写错，会被静默跳过），其余 6 个与实机一致，已改正；
+  可命中 XP 规则的模块有 9 个（org.lsposed.manager 及 leo.xposed.*、junzi.xposed.hook、
+  fansirsqi.xposed.sesame、lin.xposed、com.xposed.woodpecker、com.noobexon.xposedfakelocation、
+  io.github.chsbuffer.revancedxposed 等，均靠 `xposed` 关键词命中），≥4 会建「XP插件」夹
 
 ### 待真机验证
 
-1. 一键整理后首页是否为「夹 → 7 钉选 → 其它」；RikkaHub 包名 `cc.rikka.rikkahub` 是否与实机一致
-   （不一致时该应用被静默跳过，改 `PinnedApps.packages` 即可）
+1. 一键整理后首页是否为「夹 → 7 钉选 → 其它」（RikkaHub 包名本轮已改正，需确认它现在能上首页）
 2. XP 模块（按 JSON 规则命中）是否正确收进「XP插件」夹
-3. 支付宝（`com.eg.android.AlipayGphone`）与 RikkaHub 是否真的出现在首页第一行
+3. 支付宝（`com.eg.android.AlipayGphone`）是否真的出现在首页第一行
    （本轮修复前支付宝因大小写问题从未钉上成功）
 
 ## 下一步

@@ -12,7 +12,7 @@ object PinnedApps {
         "com.tencent.mm",              // 微信
         "com.coolapk.market",          // 酷安
         "com.autonavi.minimap",        // 高德地图
-        "cc.rikka.rikkahub",           // RikkaHub
+        "me.rerere.rikkahub",          // RikkaHub
         "com.eg.android.AlipayGphone", // 支付宝
     )
 }
