@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.AndroidViewModel
@@ -24,6 +25,7 @@ import com.deskflow.data.db.ApplyOutcome
 import com.deskflow.data.db.LauncherDbAccess
 import com.deskflow.data.db.SafeWriter
 import com.deskflow.data.db.VivoWorkspaceHolder
+import com.deskflow.data.icon.IconDiskCache
 import com.deskflow.domain.classifier.ArrangeResult
 import com.deskflow.domain.classifier.AutoArranger
 import com.deskflow.domain.classifier.CategoryRules
@@ -42,6 +44,8 @@ import com.deskflow.domain.model.Workspace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 enum class Phase { Loading, Ready, Applying, NoRoot, Error }
 
@@ -55,10 +59,17 @@ const val DOCK_PAGE_ID = -101
 
 private const val ICON_PX = 128
 
+/** 磁盘图标缓存条目存活期：应用更新换代遗留的旧 PNG 超过它就被清扫。 */
+private const val ICON_SWEEP_AFTER_MS = 30L * 24 * 60 * 60 * 1000
+
 class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
 
     private val safeWriter = SafeWriter(app)
     private val pm = app.packageManager
+    private val iconDiskCache = IconDiskCache(File(app.filesDir, "icons"))
+
+    /** 包版本号 memo（key 里带版本，应用更新换图标后自然落到新缓存文件）。 */
+    private val pkgVersions = ConcurrentHashMap<String, Long>()
 
     var phase by mutableStateOf(Phase.Loading)
         private set
@@ -76,7 +87,23 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
     var showPages by mutableStateOf(false)
     var showSearch by mutableStateOf(false)
     var searchQuery by mutableStateOf("")
-    var message by mutableStateOf<String?>(null)
+
+    /** 普通提示直接设 [message]；需要带 action 的提示走 [notify]。 */
+    private val messageState = mutableStateOf<String?>(null)
+    var message: String?
+        get() = messageState.value
+        set(value) {
+            messageState.value = value
+            if (value != null) {
+                // 直接设新消息即作废旧 action，防过期「撤销」挂到无关提示上
+                messageActionLabel = null
+                messageAction = null
+            }
+        }
+    var messageActionLabel by mutableStateOf<String?>(null)
+        private set
+    var messageAction by mutableStateOf<(() -> Unit)?>(null)
+        private set
     var loadError by mutableStateOf<String?>(null)
 
     // ---------- 批量多选 ----------
@@ -143,6 +170,7 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
                     iconCache[item.dbId] = runCatching { loadIcon(item) }.getOrNull()
                 }
             }
+            iconDiskCache.sweep(ICON_SWEEP_AFTER_MS)
             revision++
         }
     }
@@ -153,6 +181,8 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
      * 2. intent 的包名 → getApplicationIcon
      * 3. iconPackage + iconResource 列 → Resources.getDrawable（双开 / 快捷方式 intent 为空时兜底）
      * 4. componentPackage 或 iconPackage → getApplicationIcon
+     *
+     * 每层先查磁盘缓存（key = 解析路径 + 包名 + 版本），未命中才解码并回写。
      */
     private fun loadIcon(item: ItemState): ImageBitmap? {
         if (item.isFolder) return null
@@ -162,15 +192,32 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
             val pkg = comp.substring(0, idx)
             val cls = comp.substring(idx + 1)
             if (pkg.isNotEmpty() && cls.isNotEmpty()) {
-                iconOf { pm.getActivityIcon(ComponentName(pkg, cls)) }?.let { return it }
+                cachedIcon(actKey(pkg, cls)) { pm.getActivityIcon(ComponentName(pkg, cls)) }?.let { return it }
             }
-            if (pkg.isNotEmpty()) iconOf { pm.getApplicationIcon(pkg) }?.let { return it }
+            if (pkg.isNotEmpty()) cachedIcon(appKey(pkg)) { pm.getApplicationIcon(pkg) }?.let { return it }
         }
         resolveFromResourceColumns(item)?.let { return it }
         val fallbackPkg = item.componentPackage()?.takeIf { it.isNotEmpty() } ?: item.iconPackage
-        if (!fallbackPkg.isNullOrEmpty()) iconOf { pm.getApplicationIcon(fallbackPkg) }?.let { return it }
+        if (!fallbackPkg.isNullOrEmpty()) {
+            cachedIcon(appKey(fallbackPkg)) { pm.getApplicationIcon(fallbackPkg) }?.let { return it }
+        }
         return null
     }
+
+    /** 磁盘读穿：命中直接用，未命中解码后回写 PNG。 */
+    private fun cachedIcon(key: String, block: () -> Drawable): ImageBitmap? {
+        runCatching { iconDiskCache.get(key) }.getOrNull()?.let { return it.asImageBitmap() }
+        val bmp = iconOf(block) ?: return null
+        runCatching { iconDiskCache.put(key, bmp.asAndroidBitmap()) }
+        return bmp
+    }
+
+    private fun actKey(pkg: String, cls: String): String = "act:$pkg/$cls@${versionOf(pkg)}"
+
+    private fun appKey(pkg: String): String = "app:$pkg@${versionOf(pkg)}"
+
+    private fun versionOf(pkg: String): Long =
+        pkgVersions.getOrPut(pkg) { runCatching { pm.getPackageInfo(pkg, 0).versionCode.toLong() }.getOrDefault(0L) }
 
     private fun iconOf(block: () -> Drawable): ImageBitmap? =
         runCatching { block().toBitmap(ICON_PX, ICON_PX).asImageBitmap() }.getOrNull()
@@ -184,7 +231,7 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
         val id = res.getIdentifier(name, "drawable", pkg).takeIf { it != 0 }
             ?: res.getIdentifier(name, "mipmap", pkg).takeIf { it != 0 }
             ?: return null
-        return iconOf { res.getDrawable(id, null) }
+        return cachedIcon("res:$pkg:$name@${versionOf(pkg)}") { res.getDrawable(id, null) }
     }
 
     fun iconFor(item: ItemState): ImageBitmap? = iconCache[item.dbId]
@@ -439,10 +486,9 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
         appIconCache.getOrPut(intent) {
             val idx = intent.lastIndexOf('/')
             if (idx <= 0) null
-            else runCatching {
+            else cachedIcon(actKey(intent.substring(0, idx), intent.substring(idx + 1))) {
                 pm.getActivityIcon(ComponentName(intent.substring(0, idx), intent.substring(idx + 1)))
-                    .toBitmap(ICON_PX, ICON_PX).asImageBitmap()
-            }.getOrNull()
+            }
         }
     }
 
@@ -606,13 +652,13 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- search ----------
 
-    fun searchResults(): List<ItemState> {
-        val ws = workspace ?: return emptyList()
+    /** 标题/包名搜索；返回前 50 条与总命中数（超出时 UI 提示「还有更多」）。 */
+    fun searchResults(): Pair<List<ItemState>, Int> {
+        val ws = workspace ?: return emptyList<ItemState>() to 0
         val q = searchQuery.trim().lowercase()
-        if (q.isEmpty()) return emptyList()
-        return ws.liveItems
-            .filter { it.title.lowercase().contains(q) || it.intent.lowercase().contains(q) }
-            .take(50)
+        if (q.isEmpty()) return emptyList<ItemState>() to 0
+        val all = ws.liveItems.filter { it.title.lowercase().contains(q) || it.intent.lowercase().contains(q) }
+        return all.take(50) to all.size
     }
 
     fun locationLabel(item: ItemState): String = when {
@@ -704,6 +750,13 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- apply / backup ----------
 
+    /** 带动作按钮的提示（snackbar action，如「已应用 · 撤销」）。 */
+    fun notify(text: String, actionLabel: String? = null, action: (() -> Unit)? = null) {
+        message = text
+        messageActionLabel = actionLabel
+        messageAction = action
+    }
+
     fun requestApply() {
         val ws = workspace ?: return
         confirmPlan = DiffCalculator.plan(ws, maxId)
@@ -731,7 +784,11 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
                     history?.clear()
                     lastReversePlan = reverse
                     phase = Phase.Ready
-                    message = "已应用（${outcome.plan}），备份 ${outcome.backupName}"
+                    if (reverse != null) {
+                        notify("已应用（${outcome.plan}），备份 ${outcome.backupName}", "撤销") { requestUndoApply() }
+                    } else {
+                        message = "已应用（${outcome.plan}），备份 ${outcome.backupName}"
+                    }
                 }
                 is ApplyOutcome.Conflict -> {
                     phase = Phase.Ready

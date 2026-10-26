@@ -519,8 +519,29 @@ Dock 格数无 prefs 来源，维持 5（实测各风格 dock 都有 cellX=4 即
 单测 82 → 86（prefs 解析 4 例：双风格读取、按风格取值、缺键回退、垃圾输入钳位）。
 真机验证点：重新读取应显示 5 列 × 9 行，图标与真桌面逐格对齐；改系统桌面布局后再重读应跟随。
 
+## 18. 图标磁盘缓存：冷启动免 PackageManager 逐个解码（2026-10-26）
+
+冷启动 200+ 图标每张都要走 PackageManager 解析（getActivityIcon / 资源表 / getApplicationIcon
+层层 try），要数秒，期间格子全灰逐个浮现。新增 `IconDiskCache`（`data/icon/`，应用私有
+`filesDir/icons/`）：解码成功的 128px 位图落 PNG，再次加载只需解一张本地图（毫秒级）。
+
+- key = 解析路径 + 包名 + 版本（`act:pkg/cls@ver` / `app:pkg@ver` / `res:pkg:name@ver`），
+  应用更新换图标后自然落到新文件；文件名取 key 的 MD5（key 含 `/`、`:`、`@` 不宜直接做文件名）
+- 读穿在 loadIcon 每一层内部：命中直接用，未命中解码后回写；写 PNG 先落 `.tmp`（带线程 id，
+  并发同 key 不互踩）再原子改名；损坏文件 decode 返回 null 当未命中并删除，下次重新解码
+- 添加应用列表（AppPicker）的 `appIcon` 走同一 `act:` key，与桌面图标共享缓存文件
+- 清扫：`preloadIcons` 完成后 sweep——超过 30 天未更新的条目与残留 `.tmp` 一并删除
+- 包版本 memo 在 `ConcurrentHashMap`（IO 线程访问）；缓存全程 best-effort，任何失败静默降级为
+  原解码路径，不影响功能
+- 顺手的 UX：snackbar 支持 action——「已应用」提示带「撤销」按钮直达撤销上次应用；
+  冲突弹窗把「重新读取会丢弃未应用编辑」改为 error 色独立一行；搜索结果显示命中计数
+
+纯 Android 图形/IO，无 JVM 可断言域逻辑。真机验证点：首装首次打开逐个解码（写缓存），杀进程
+重开应显著变快；`adb shell pm path` 确认缓存目录生成于 `/data/data/com.deskflow.debug/files/icons/`。
+
 ## 下一步
 
+- 真机验证 18 节：首装冷启动慢（写缓存）→ 杀进程重开图标应近即时；更新某应用后其图标应仍正确
 - 真机验证 17 节：重新读取后编辑器应为 5 列 × 9 行、与真桌面逐格对齐；Dock 5 格横排
 - 真机验证 16 节：搜索 → 点命中项 → 打开应用 / 强制停止（前后 `ps` 或桌面观察进程）/ 应用信息页跳转 / 定位
 - 真机验证 15 节：冲突检测（应用前在真桌面拖一个图标再点「应用」，应弹外部改动提示）；批量多选

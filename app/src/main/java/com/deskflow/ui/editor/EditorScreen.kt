@@ -34,8 +34,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -77,10 +79,15 @@ import kotlin.math.roundToInt
 fun DeskFlowApp(vm: DeskFlowViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(vm.message) {
-        vm.message?.let {
-            snackbarHostState.showSnackbar(it)
-            vm.message = null
-        }
+        val msg = vm.message ?: return@LaunchedEffect
+        val hasAction = vm.messageActionLabel != null
+        val result = snackbarHostState.showSnackbar(
+            msg,
+            actionLabel = vm.messageActionLabel,
+            duration = if (hasAction) SnackbarDuration.Long else SnackbarDuration.Short,
+        )
+        vm.message = null
+        if (result == SnackbarResult.ActionPerformed) vm.messageAction?.invoke()
     }
 
     when (vm.phase) {
@@ -191,11 +198,23 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
                         onDismissRequest = { vm.conflictPrompt = null },
                         title = { Text("桌面数据已被外部修改") },
                         text = {
-                            Text(
-                                "自读取以来 launcher.db 发生了变化：${prompt.changes}。\n\n" +
-                                    "仍要写入会覆盖桌面的这些改动；建议重新读取后再编辑" +
-                                    if (prompt.isReverse) "" else "（注意：当前未应用的编辑会丢弃）。",
-                            )
+                            Column {
+                                Text("自读取以来 launcher.db 被外部（桌面自身）改动：${prompt.changes}。")
+                                Spacer(Modifier.size(6.dp))
+                                Text(
+                                    "「仍要写入」会覆盖以上改动；「重新读取」放弃写入、同步最新布局。",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (!prompt.isReverse) {
+                                    Spacer(Modifier.size(6.dp))
+                                    Text(
+                                        "注意：「重新读取」会丢弃当前未应用的编辑。",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                            }
                         },
                         confirmButton = { Button(onClick = vm::confirmOverwriteConflict) { Text("仍要写入") } },
                         dismissButton = { TextButton(onClick = vm::reloadInsteadOfConflict) { Text("重新读取") } },
@@ -339,7 +358,7 @@ private fun SearchPanel(vm: DeskFlowViewModel) {
             singleLine = true,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
         )
-        val hits = remember(vm.searchQuery, vm.revision) { vm.searchResults() }
+        val (hits, total) = remember(vm.searchQuery, vm.revision) { vm.searchResults() }
         when {
             vm.searchQuery.isBlank() -> Unit
             hits.isEmpty() -> Text(
@@ -348,13 +367,21 @@ private fun SearchPanel(vm: DeskFlowViewModel) {
                 modifier = Modifier.padding(horizontal = 12.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            else -> LazyRow(contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                items(hits) { hit ->
-                    AssistChip(
-                        onClick = { vm.requestItemActions(hit) },
-                        label = { Text("${hit.title.take(12)} · ${vm.locationLabel(hit)}", maxLines = 1) },
-                        modifier = Modifier.padding(end = 4.dp),
-                    )
+            else -> Column {
+                Text(
+                    "命中 $total 项" + if (total > hits.size) "（显示前 ${hits.size}）" else "",
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LazyRow(contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+                    items(hits) { hit ->
+                        AssistChip(
+                            onClick = { vm.requestItemActions(hit) },
+                            label = { Text("${hit.title.take(12)} · ${vm.locationLabel(hit)}", maxLines = 1) },
+                            modifier = Modifier.padding(end = 4.dp),
+                        )
+                    }
                 }
             }
         }
