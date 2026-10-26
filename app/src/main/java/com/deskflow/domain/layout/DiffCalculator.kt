@@ -14,6 +14,9 @@ data class InsertRow(
     val spanX: Int,
     val spanY: Int,
     val itemType: Int,
+    // 双开/快捷方式的图标解析依赖这两列（四级兜底），反向恢复被删行时不能丢
+    val iconPackage: String? = null,
+    val iconResource: String? = null,
 )
 
 sealed class DbOp {
@@ -83,6 +86,8 @@ object DiffCalculator {
                 spanX = item.spanX,
                 spanY = item.spanY,
                 itemType = item.itemCode,
+                iconPackage = item.iconPackage,
+                iconResource = item.iconResource,
             )
         }
 

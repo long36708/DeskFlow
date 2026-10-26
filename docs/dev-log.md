@@ -450,6 +450,40 @@ strong skipping（Kotlin 2.0+ 默认开）下 content lambda 按捕获（vm、ch
 补读 revision。附带收益：图标随加载逐个浮现（不再整批等完）、快照 map 线程安全（原 HashMap 主线程读 +
 IO 线程写本就是数据竞争）。
 
+## 15. 写回冲突检测 + 批量多选 + 撤销上次应用（2026-10-25）
+
+**冲突检测（防静默覆盖）**：原链路的 diff 只基于编辑器内存快照，打开应用到点「应用」之间桌面若自己
+改了库（装新应用、桌面端拖动、widget 调尺寸），这些改动会被静默写掉。现在 `SafeWriter` 持有 load 时的
+库快照基线，`writePlan` 里现读 fresh 后用 `WorkspaceDiff.summarize` 比对，有差异返回
+`ApplyOutcome.Conflict`（人读摘要：位置变动/新增/移除/改名/页面变化），UI 弹「仍要写入（覆盖）/重新读取」。
+细节：空 plan 无可覆盖物、不拦；写回验证通过后把写后状态设为新基线（否则二次 apply 误报）；
+`restoreBackup` 后基线置空等 load 重建；反向写回走同一检测（`isReverse` 标记提示文案差异）。
+
+**批量多选**：底栏「多选」或菜单进入。多选模式下：点图标加减选（widget 只读项不可选）、点文件夹
+= 整批收进该夹（文件夹本身不可加选，收夹用 tap 语义替代拖拽）、点页签/Dock 整批 `placeFirstFree`、
+批量删除带确认；长按拖拽在多选下禁用（pointerInput 键加入 `multiSelectMode` 重建手势节点）。
+放不下的项留在原位并计入提示。整批包在**一次 `edit{}`** 里 = 一次「撤销上一步」。
+
+**撤销上次应用（反向 diff）**：`ReversePlanner.reverse(ws, plan)` 在 `requestApply` 时捕获（必须先于
+`commitApplied`——被删行完整数据、original* 坐标/标题、被删页 originalOrder 此刻才可得）。
+反向 ops = 正向 ops **倒序逐个取逆**：Insert↔Delete、UpdatePosition/UpdateTitle 取 original* 值、
+InsertScreen↔DeleteScreen、UpdateScreenOrder 取 originalOrder；倒序保证依赖成立（删新页在图标回迁后、
+重建被删页在图标回迁前）。会话内新增又删除的行从未落库，反向跳过（不能 Insert 回来）。
+执行走既有 `applyPlan`：备份 → 写 → 验证（verifyDB 按 ops 逐条核对，对反向 plan 同样成立）→ 强启 → load 对齐。
+入口「更多 → 撤销上次应用」，编辑器有未写改动时禁用（反向 plan 与编辑态无冲突合并语义）；
+`restoreBackup`/RolledBack 后失效。附带：`InsertRow` 扩展 `iconPackage/iconResource` 两列，
+反向恢复被删行不丢图标兜底信息（双开/快捷方式），adapter INSERT 同步。
+
+提交前 code review 修三处：① 反向 plan 不再在 `requestApply` 预计算，改为写回成功后、`commitApplied`
+之前从**实际执行的** plan 派生——冲突「仍要写入」路径下 SafeWriter 用 fresh.maxId 重算正向 plan，
+外部加行时 Insert id 与预计算的反向 plan 错位，撤销会误删外部新增行；② 批量「全选本页」排除文件夹、
+收夹批次滤掉文件夹（与点选语义一致，防嵌套夹）；③ `baseline` 加 `@Volatile`（load/writePlan 同在
+IO 池，收敛可见性）。
+
+单测 69 → 82（反向 plan 9 例：移动/新增/删除/改名/删页/新页+移动/级联删夹/进新夹的倒序断言、
+未落库行跳过；快照 diff 4 例）。未真机验证：冲突弹窗真实触发路径（需编辑期间动桌面）、
+反向写回的真机回滚正确性——下一步优先。
+
 ## 下一步
 
 - 改动编辑器手势/网格渲染后，跑 `python scripts/drag-check.py drag` 与 `tap` 做回归（JVM 单测覆盖不到手势）

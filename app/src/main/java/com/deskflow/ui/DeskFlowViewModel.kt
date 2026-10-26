@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.ComponentName
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -26,6 +27,7 @@ import com.deskflow.domain.classifier.CategoryRules
 import com.deskflow.domain.classifier.DefaultRules
 import com.deskflow.domain.layout.DiffCalculator
 import com.deskflow.domain.layout.DiffPlan
+import com.deskflow.domain.layout.ReversePlanner
 import com.deskflow.domain.layout.WorkspaceEditor
 import com.deskflow.domain.layout.WorkspaceHistory
 import com.deskflow.domain.layout.commitApplied
@@ -42,6 +44,9 @@ enum class Phase { Loading, Ready, Applying, NoRoot, Error }
 
 /** 应用选择列表的一行：intent 即 vivo 桌面行的 `pkg/activity` 组件格式。 */
 data class AppEntry(val intent: String, val label: String, val pkg: String)
+
+/** 写回前发现桌面被外部改动的提示；isReverse 标记被拦下的是正向应用还是撤销上次应用。 */
+data class ConflictPrompt(val changes: String, val isReverse: Boolean)
 
 const val DOCK_PAGE_ID = -101
 
@@ -70,6 +75,16 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
     var searchQuery by mutableStateOf("")
     var message by mutableStateOf<String?>(null)
     var loadError by mutableStateOf<String?>(null)
+
+    // ---------- 批量多选 ----------
+    var multiSelectMode by mutableStateOf(false)
+        private set
+    val multiSelected = mutableStateListOf<ItemState>()
+    var confirmDeleteMulti by mutableStateOf(false)
+    var conflictPrompt by mutableStateOf<ConflictPrompt?>(null)
+    var confirmUndoApply by mutableStateOf(false)
+    var lastReversePlan by mutableStateOf<DiffPlan?>(null)
+        private set
 
     /** 必须用快照 map：图标由 IO 线程异步写入，网格在组合期直接观察逐项刷新；
      *  普通 map 写完后网格不会重组（网格子树不读 revision），首次打开图标一直是灰块。 */
@@ -107,6 +122,10 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
                 maxId = holder.maxId
                 currentScreenId = holder.workspace.pages.firstOrNull()?.screenId ?: DOCK_PAGE_ID
                 selected = null
+                multiSelectMode = false
+                multiSelected.clear()
+                conflictPrompt = null
+                confirmUndoApply = false
                 phase = Phase.Ready
                 preloadIcons(holder.workspace)
             }
@@ -183,6 +202,15 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun tapItem(item: ItemState) {
+        if (multiSelectMode) {
+            when {
+                item.readOnly -> Unit
+                // 多选模式下点文件夹 = 把已选项整体收进去；文件夹本身不可加选
+                item.isFolder -> if (multiSelected.isNotEmpty()) moveMultiSelectionIntoFolder(item)
+                else -> if (!multiSelected.remove(item)) multiSelected.add(item)
+            }
+            return
+        }
         val sel = selected
         if (sel == null) {
             if (item.isFolder && !item.readOnly) folderOpen = item else selected = item
@@ -239,11 +267,6 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
         currentScreenId = screenId
     }
 
-    /** 删除需二次确认：先弹窗，确认后走 [confirmDeleteNow]。 */
-    fun requestDelete() {
-        confirmDelete = selected ?: return
-    }
-
     fun confirmDeleteNow() {
         val sel = confirmDelete ?: return
         confirmDelete = null
@@ -280,6 +303,101 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
     fun cancelSelection() {
         selected = null
         revision++
+    }
+
+    // ---------- 批量多选 ----------
+
+    fun startMultiSelect(seed: ItemState? = null) {
+        selected = null
+        folderOpen = null
+        confirmDelete = null
+        arrangePreview = null
+        multiSelectMode = true
+        multiSelected.clear()
+        seed?.takeIf { !it.readOnly }?.let { multiSelected.add(it) }
+        revision++
+    }
+
+    fun exitMultiSelect() {
+        multiSelectMode = false
+        multiSelected.clear()
+        confirmDeleteMulti = false
+        revision++
+    }
+
+    fun selectAllOnPage() {
+        visibleItems().forEach { item ->
+            // 文件夹与点选语义一致：不可加选（点它=整批收进）
+            if (!item.readOnly && !item.isFolder && !multiSelected.contains(item)) multiSelected.add(item)
+        }
+    }
+
+    /** 整批移到某页/Dock 的空位；放不下的留在原位并计入提示。一次 edit = 一次撤销。 */
+    fun moveMultiSelectionToPage(screenId: Int) {
+        val batch = multiSelected.toList()
+        if (batch.isEmpty()) return
+        val (container, screen) = containerPage(screenId)
+        val movedItems = mutableListOf<ItemState>()
+        edit { ed ->
+            batch.forEach { item ->
+                if (ed.placeFirstFree(item, container, screen)) movedItems += item
+            }
+            movedItems.isNotEmpty()
+        }
+        multiSelected.removeAll(movedItems)
+        currentScreenId = screenId
+        message = batchResultMessage("已移动 ${movedItems.size} 项", batch.size, movedItems.size)
+        if (multiSelected.isEmpty()) exitMultiSelect()
+    }
+
+    /** 整批收进已有文件夹；已在夹内的、文件夹本身（不可嵌套）跳过。 */
+    fun moveMultiSelectionIntoFolder(folder: ItemState) {
+        if (!folder.isFolder || folder.readOnly) return
+        val batch = multiSelected.filter { it !== folder && !it.isFolder && it.container != folder.dbId }
+        if (batch.isEmpty()) return
+        val movedItems = mutableListOf<ItemState>()
+        edit { ed ->
+            batch.forEach { item ->
+                if (ed.placeFirstFree(item, folder.dbId, folder.screen)) movedItems += item
+            }
+            movedItems.isNotEmpty()
+        }
+        multiSelected.removeAll(movedItems)
+        message = batchResultMessage("已收进 ${movedItems.size} 项到「${folder.title}」", batch.size, movedItems.size)
+        if (multiSelected.isEmpty()) exitMultiSelect()
+    }
+
+    private fun batchResultMessage(head: String, total: Int, moved: Int): String = buildString {
+        append(head)
+        val skipped = total - moved
+        if (skipped > 0) append("，$skipped 项放不下留在原位")
+        append("，点「应用」写入桌面")
+    }
+
+    /** 删除需二次确认：先弹窗，确认后走 [confirmDeleteNow]。 */
+    fun requestDelete() {
+        if (multiSelectMode) {
+            if (multiSelected.isNotEmpty()) confirmDeleteMulti = true
+            return
+        }
+        confirmDelete = selected ?: return
+    }
+
+    fun confirmDeleteMultiNow() {
+        if (!confirmDeleteMulti) return
+        confirmDeleteMulti = false
+        val batch = multiSelected.toList()
+        // 不能回落到已标记删除的页上，否则子项会散落到一张即将消失的页
+        val restore = visiblePages().firstOrNull()?.screenId ?: 0
+        var deleted = 0
+        edit { ed ->
+            batch.forEach { item ->
+                if (ed.delete(item, restore)) deleted++
+            }
+            deleted > 0
+        }
+        exitMultiSelect()
+        message = "已删除 $deleted 项（可用「更多 → 撤销上一步」回退），点「应用」写入桌面"
     }
 
     // ---------- app picker（添加应用到桌面） ----------
@@ -356,6 +474,9 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
         confirmDelete = null
         renameTarget = null
         arrangePreview = null
+        multiSelectMode = false
+        multiSelected.clear()
+        confirmDeleteMulti = false
         if (currentScreenId != DOCK_PAGE_ID && visiblePages().none { it.screenId == currentScreenId }) {
             currentScreenId = visiblePages().firstOrNull()?.screenId ?: DOCK_PAGE_ID
         }
@@ -523,20 +644,32 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun doApply() {
-        val ws = workspace ?: return
         confirmPlan = null
+        runForwardApply(ignoreExternalChanges = false)
+    }
+
+    private fun runForwardApply(ignoreExternalChanges: Boolean) {
+        val ws = workspace ?: return
         viewModelScope.launch {
             phase = Phase.Applying
-            when (val outcome = safeWriter.apply(ws)) {
+            when (val outcome = safeWriter.apply(ws, ignoreExternalChanges)) {
                 is ApplyOutcome.Success -> {
+                    // 反向 plan 必须从实际执行的 plan 在 commitApplied 之前派生：被删行数据/坐标原值
+                    // 此刻才可得；且 SafeWriter 可能用 fresh.maxId 重算过 Insert id，预计算的会错位
+                    val reverse = if (outcome.plan.ops.isEmpty()) null else ReversePlanner.reverse(ws, outcome.plan)
                     maxId = maxOf(maxId, outcome.plan.insertedIds.maxOrNull() ?: 0L)
                     // 图标缓存按 dbId 存，新增行的 id 会变，先迁移再提交
                     remapIconCache(outcome.plan.idMap)
                     // 写库成功后必须把内存状态推进到新基线，否则二次应用会重复 INSERT
                     commitApplied(ws, outcome.plan)
                     history?.clear()
+                    lastReversePlan = reverse
                     phase = Phase.Ready
                     message = "已应用（${outcome.plan}），备份 ${outcome.backupName}"
+                }
+                is ApplyOutcome.Conflict -> {
+                    phase = Phase.Ready
+                    conflictPrompt = ConflictPrompt(outcome.changes, isReverse = false)
                 }
                 is ApplyOutcome.Failed -> {
                     phase = Phase.Ready
@@ -545,11 +678,68 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
                 is ApplyOutcome.RolledBack -> {
                     // DB 已回到备份状态，内存 workspace 与之不一致，重新读取对齐
                     message = "验证不一致，已自动回滚到 ${outcome.backupName}"
+                    lastReversePlan = null
                     load()
                 }
             }
             revision++
         }
+    }
+
+    // ---------- 撤销上次应用 ----------
+
+    /** 上次应用的改动还停留在库里的当前状态、且编辑器没有新的未写改动时才能反向回退。 */
+    fun canUndoLastApply(): Boolean = lastReversePlan != null && !hasPendingChanges()
+
+    fun requestUndoApply() {
+        if (canUndoLastApply()) confirmUndoApply = true
+    }
+
+    fun undoLastApply() {
+        if (lastReversePlan == null) return
+        confirmUndoApply = false
+        runReverseApply(ignoreExternalChanges = false)
+    }
+
+    private fun runReverseApply(ignoreExternalChanges: Boolean) {
+        val plan = lastReversePlan ?: return
+        viewModelScope.launch {
+            phase = Phase.Applying
+            when (val outcome = safeWriter.applyPlan(plan, ignoreExternalChanges)) {
+                is ApplyOutcome.Success -> {
+                    lastReversePlan = null
+                    phase = Phase.Ready
+                    message = "已撤销上次应用（备份 ${outcome.backupName}）"
+                    load()
+                }
+                is ApplyOutcome.Conflict -> {
+                    phase = Phase.Ready
+                    conflictPrompt = ConflictPrompt(outcome.changes, isReverse = true)
+                }
+                is ApplyOutcome.Failed -> {
+                    phase = Phase.Ready
+                    message = "撤销失败：${outcome.error.message}"
+                }
+                is ApplyOutcome.RolledBack -> {
+                    message = "撤销验证不一致，已自动回滚到 ${outcome.backupName}"
+                    lastReversePlan = null
+                    load()
+                }
+            }
+            revision++
+        }
+    }
+
+    fun confirmOverwriteConflict() {
+        val prompt = conflictPrompt ?: return
+        conflictPrompt = null
+        if (prompt.isReverse) runReverseApply(ignoreExternalChanges = true)
+        else runForwardApply(ignoreExternalChanges = true)
+    }
+
+    fun reloadInsteadOfConflict() {
+        conflictPrompt = null
+        load()
     }
 
     fun manualBackup() {
@@ -573,7 +763,11 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
             val result = safeWriter.restoreBackup(name)
             showBackups = false
             message = result.fold({ "已从 $name 恢复" }, { "恢复失败：${it.message}" })
-            if (result.isSuccess) load() else phase = Phase.Ready
+            if (result.isSuccess) {
+                // 库被整体替换，反向 plan 指向的状态已不存在
+                lastReversePlan = null
+                load()
+            } else phase = Phase.Ready
         }
     }
 }

@@ -168,9 +168,14 @@ class VivoLauncherAdapter {
 
     private fun insert(db: SQLiteDatabase, tables: WorkspaceTables, row: InsertRow) {
         db.execSQL(
-            "INSERT INTO ${tables.locationTable} (_id, title, intent, container, screen, cellX, cellY, spanX, spanY, itemType, rank, modified) " +
-                "VALUES (?,?,?,?,?,?,?,?,?,?,0,1)",
-            arrayOf<Any>(row.id, row.title, row.intent, row.container, row.screen, row.cellX, row.cellY, row.spanX, row.spanY, row.itemType),
+            "INSERT INTO ${tables.locationTable} " +
+                "(_id, title, intent, container, screen, cellX, cellY, spanX, spanY, itemType, iconPackage, iconResource, rank, modified) " +
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,1)",
+            arrayOf<Any?>(
+                row.id, row.title, row.intent, row.container, row.screen,
+                row.cellX, row.cellY, row.spanX, row.spanY, row.itemType,
+                row.iconPackage, row.iconResource,
+            ),
         )
         db.execSQL(
             "INSERT INTO ${VivoConstants.ATTRIBUTE_TABLE} (_id, title, intent, itemType, modified, restored) " +

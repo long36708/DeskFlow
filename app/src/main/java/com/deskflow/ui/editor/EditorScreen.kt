@@ -119,7 +119,11 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
                             items(chipIds) { id ->
                                 AssistChip(
                                     onClick = {
-                                        if (vm.selected != null) vm.moveSelectionToPage(id) else vm.currentScreenId = id
+                                        when {
+                                            vm.multiSelectMode -> vm.moveMultiSelectionToPage(id)
+                                            vm.selected != null -> vm.moveSelectionToPage(id)
+                                            else -> vm.currentScreenId = id
+                                        }
                                     },
                                     label = {
                                         Text(
@@ -168,6 +172,44 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
                         dismissButton = { TextButton(onClick = { vm.confirmDelete = null }) { Text("取消") } },
                     )
                 }
+                if (vm.confirmDeleteMulti) {
+                    AlertDialog(
+                        onDismissRequest = { vm.confirmDeleteMulti = false },
+                        title = { Text("删除所选 ${vm.multiSelected.size} 项？") },
+                        text = { Text("所选图标将从桌面移除（不会卸载应用）。可用「更多 → 撤销上一步」回退。") },
+                        confirmButton = { Button(onClick = vm::confirmDeleteMultiNow) { Text("删除") } },
+                        dismissButton = { TextButton(onClick = { vm.confirmDeleteMulti = false }) { Text("取消") } },
+                    )
+                }
+                vm.conflictPrompt?.let { prompt ->
+                    AlertDialog(
+                        onDismissRequest = { vm.conflictPrompt = null },
+                        title = { Text("桌面数据已被外部修改") },
+                        text = {
+                            Text(
+                                "自读取以来 launcher.db 发生了变化：${prompt.changes}。\n\n" +
+                                    "仍要写入会覆盖桌面的这些改动；建议重新读取后再编辑" +
+                                    if (prompt.isReverse) "" else "（注意：当前未应用的编辑会丢弃）。",
+                            )
+                        },
+                        confirmButton = { Button(onClick = vm::confirmOverwriteConflict) { Text("仍要写入") } },
+                        dismissButton = { TextButton(onClick = vm::reloadInsteadOfConflict) { Text("重新读取") } },
+                    )
+                }
+                if (vm.confirmUndoApply) {
+                    AlertDialog(
+                        onDismissRequest = { vm.confirmUndoApply = false },
+                        title = { Text("撤销上次应用到桌面？") },
+                        text = {
+                            Text(
+                                "按反向操作写回（${vm.lastReversePlan}），恢复到上次应用前的布局。\n" +
+                                    "写回前会自动备份并逐条验证。",
+                            )
+                        },
+                        confirmButton = { Button(onClick = vm::undoLastApply) { Text("撤销") } },
+                        dismissButton = { TextButton(onClick = { vm.confirmUndoApply = false }) { Text("取消") } },
+                    )
+                }
                 vm.confirmPlan?.let { plan ->
                     if (plan.ops.isEmpty()) {
                         LaunchedEffect(Unit) { vm.message = "没有待应用的改动"; vm.confirmPlan = null }
@@ -209,6 +251,24 @@ private fun Centered(text: String, retry: (() -> Unit)? = null) {
 
 @Composable
 private fun SelectionBar(vm: DeskFlowViewModel) {
+    if (vm.multiSelectMode) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "已选 ${vm.multiSelected.size} 项 · 点图标加减选，点文件夹收进，点页签整体移动",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            OutlinedButton(onClick = { vm.selectAllOnPage() }) { Text("全选本页") }
+            OutlinedButton(
+                onClick = { vm.requestDelete() },
+                enabled = vm.multiSelected.isNotEmpty(),
+                modifier = Modifier.padding(start = 8.dp),
+            ) { Text("删除") }
+            TextButton(onClick = { vm.exitMultiSelect() }, modifier = Modifier.padding(start = 8.dp)) { Text("完成") }
+        }
+        return
+    }
     val sel = vm.selected
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (sel == null) {
@@ -216,7 +276,9 @@ private fun SelectionBar(vm: DeskFlowViewModel) {
                 "点按选中图标 → 点空位移动 / 点其它图标合并成文件夹；长按拖拽移动；拖出左右边缘换页",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
             )
+            TextButton(onClick = { vm.startMultiSelect() }) { Text("多选") }
         } else {
             Text("已选: ${sel.title}", fontSize = 13.sp, modifier = Modifier.weight(1f))
             if (sel.isFolder) {
@@ -238,6 +300,18 @@ private fun OverflowMenu(vm: DeskFlowViewModel) {
                 text = { Text("撤销上一步") },
                 onClick = { expanded = false; vm.undo() },
                 enabled = vm.canUndo(),
+            )
+            DropdownMenuItem(
+                text = { Text("撤销上次应用") },
+                onClick = { expanded = false; vm.requestUndoApply() },
+                enabled = vm.canUndoLastApply(),
+            )
+            DropdownMenuItem(
+                text = { Text(if (vm.multiSelectMode) "退出批量选择" else "批量选择") },
+                onClick = {
+                    expanded = false
+                    if (vm.multiSelectMode) vm.exitMultiSelect() else vm.startMultiSelect()
+                },
             )
             DropdownMenuItem(text = { Text("一键整理") }, onClick = { expanded = false; vm.requestArrange() })
             DropdownMenuItem(text = { Text("添加应用") }, onClick = { expanded = false; vm.showAppPicker = true })
@@ -341,8 +415,9 @@ private fun WorkGrid(
                     .zIndex(if (dragging) 1f else 0f)
                     .offset { IntOffset(xPx, yPx) }
                     .size(wDp, hDp)
-                    .pointerInput(item, cellW, cellH) {
+                    .pointerInput(item, cellW, cellH, vm.multiSelectMode) {
                         if (cellW == 0 || cellH == 0) return@pointerInput
+                        if (vm.multiSelectMode) return@pointerInput // 多选下禁拖：点选语义与拖拽冲突
                         detectDragGesturesAfterLongPress(
                             onDragStart = {
                                 dragItem = item
@@ -409,12 +484,14 @@ private fun ItemCell(
     modifier: Modifier,
 ) {
     val shape = RoundedCornerShape(8.dp)
+    val multiSelected = vm.multiSelectMode && vm.multiSelected.contains(item)
     Box(
         modifier
             .padding(2.dp)
             .background(
                 when {
                     dragging -> Color(0x6642A5F5)
+                    multiSelected -> Color(0x554CAF50)
                     selected -> Color(0x55FFB300)
                     else -> Color.Transparent
                 },

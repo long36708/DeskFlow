@@ -10,6 +10,7 @@ import com.deskflow.data.backup.BackupManager
 import com.deskflow.domain.layout.DbOp
 import com.deskflow.domain.layout.DiffCalculator
 import com.deskflow.domain.layout.DiffPlan
+import com.deskflow.domain.layout.WorkspaceDiff
 import com.deskflow.domain.model.Workspace
 import com.deskflow.domain.model.CONTAINER_DESKTOP
 import com.deskflow.domain.model.CONTAINER_DOCK
@@ -23,6 +24,8 @@ sealed class ApplyOutcome {
     data class Success(val plan: DiffPlan, val backupName: String) : ApplyOutcome()
     data class Failed(val error: RootError) : ApplyOutcome()
     data class RolledBack(val backupName: String) : ApplyOutcome()
+    /** 编辑期间 launcher.db 被外部（桌面自身）改动，[changes] 为人读摘要。 */
+    data class Conflict(val changes: String) : ApplyOutcome()
 }
 
 class SafeWriter(context: Context) {
@@ -30,6 +33,10 @@ class SafeWriter(context: Context) {
     private val dbAccess = LauncherDbAccess(context)
     private val backupManager = BackupManager(context)
     private val adapter = VivoLauncherAdapter()
+
+    /** load/写回成功时的库快照基线；apply 前与现读快照比对，发现桌面的外部改动。 */
+    @Volatile
+    private var baseline: VivoSnapshot? = null
 
     fun rootAvailable(): Boolean = dbAccess.rootAvailable()
 
@@ -43,10 +50,101 @@ class SafeWriter(context: Context) {
             val db = openReadWrite(work)
             try {
                 val snapshot = readChecked(db)
+                baseline = snapshot
                 VivoWorkspaceHolder(snapshot.workspace, snapshot.maxId)
             } finally {
                 db.close()
             }
+        }
+    }
+
+    suspend fun apply(edited: Workspace, ignoreExternalChanges: Boolean = false): ApplyOutcome =
+        withContext(Dispatchers.IO) {
+            writePlan(ignoreExternalChanges) { fresh -> DiffCalculator.plan(edited, fresh.maxId) }
+        }
+
+    /** 直接执行一组现成 ops（反向 plan 撤销用），跳过 planner。 */
+    suspend fun applyPlan(plan: DiffPlan, ignoreExternalChanges: Boolean = false): ApplyOutcome =
+        withContext(Dispatchers.IO) {
+            writePlan(ignoreExternalChanges) { plan }
+        }
+
+    private fun writePlan(ignoreExternalChanges: Boolean, makePlan: (VivoSnapshot) -> DiffPlan): ApplyOutcome {
+        var meta: FileMeta? = null
+        var backup: File? = null
+        try {
+            if (!dbAccess.rootAvailable()) return ApplyOutcome.Failed(RootError.NoRoot)
+            val work = dbAccess.pullWork()
+            meta = dbAccess.statOriginal()
+            backup = backupManager.backup(work)
+
+            val db = openReadWrite(work)
+            val plan: DiffPlan
+            try {
+                val fresh = readChecked(db)
+                plan = makePlan(fresh)
+                if (plan.ops.isEmpty()) {
+                    backup.delete()
+                    return ApplyOutcome.Success(plan, backup.name)
+                }
+                // 空 plan 无可覆盖的东西，不拦；有 ops 才检查编辑期间桌面是否被外部改过
+                if (!ignoreExternalChanges) externalChanges(fresh)?.let {
+                    backup.delete()
+                    return ApplyOutcome.Conflict(it)
+                }
+                adapter.apply(db, plan)
+            } finally {
+                db.close()
+            }
+
+            return pushVerifyBaseline(work, meta, backup, plan)
+        } catch (e: RootDbException) {
+            return ApplyOutcome.Failed(e.error)
+        } catch (e: Exception) {
+            // best effort restore if we already made a backup
+            backup?.let { b -> meta?.let { runCatching { dbAccess.pushWork(b, it) } } }
+            return ApplyOutcome.Failed(RootError.CopyFailed(e.message ?: e.javaClass.simpleName))
+        }
+    }
+
+    /** 写回 → 强启桌面 → 拉回验证 → 通过后把写后状态设为新基线（否则二次 apply 会误报外部变化）。 */
+    private fun pushVerifyBaseline(work: File, meta: FileMeta?, backup: File, plan: DiffPlan): ApplyOutcome {
+        dbAccess.pushWork(work, meta)
+        dbAccess.reloadLauncher()
+
+        val verify = dbAccess.pullWork()
+        val db = SQLiteDatabase.openDatabase(
+            verify.absolutePath, null,
+            SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS,
+        )
+        try {
+            if (!verifyDB(db, plan)) {
+                dbAccess.pushWork(backup, meta)
+                dbAccess.reloadLauncher()
+                return ApplyOutcome.RolledBack(backup.name)
+            }
+            // 写后状态成为新基线（否则二次 apply 会误报外部变化）
+            baseline = readChecked(db)
+        } finally {
+            db.close()
+        }
+        return ApplyOutcome.Success(plan, backup.name)
+    }
+
+    private fun externalChanges(fresh: VivoSnapshot): String? {
+        val loaded = baseline ?: return null
+        val changes = WorkspaceDiff.summarize(loaded.workspace, fresh.workspace)
+        return if (changes.isEmpty()) null else changes.joinToString("；")
+    }
+
+    suspend fun restoreBackup(name: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val src = backupManager.restoreSource(name) ?: error("备份不存在: $name")
+            val meta = dbAccess.statOriginal()
+            dbAccess.pushWork(src, meta)
+            dbAccess.reloadLauncher()
+            // 库被整体替换，旧基线失效；调用方 load() 会重建
+            baseline = null
         }
     }
 
@@ -57,82 +155,26 @@ class SafeWriter(context: Context) {
             throw RootDbException(RootError.UnsupportedDesktopStyle("当前 currentDesktop=${e.currentDesktop}，仅支持标准(1000)与抽屉(1002)"))
         }
 
-    suspend fun apply(edited: Workspace): ApplyOutcome = withContext(Dispatchers.IO) {
-        var meta: FileMeta? = null
-        try {
-            if (!dbAccess.rootAvailable()) return@withContext ApplyOutcome.Failed(RootError.NoRoot)
-            val work = dbAccess.pullWork()
-            meta = dbAccess.statOriginal()
-            val backup = backupManager.backup(work)
-
-            val db = openReadWrite(work)
-            val plan: DiffPlan
-            try {
-                val fresh = readChecked(db)
-                plan = DiffCalculator.plan(edited, fresh.maxId)
-                if (plan.ops.isEmpty()) {
-                    backup.delete()
-                    return@withContext ApplyOutcome.Success(plan, backup.name)
-                }
-                adapter.apply(db, plan)
-            } finally {
-                db.close()
-            }
-
-            dbAccess.pushWork(work, meta)
-            dbAccess.reloadLauncher()
-
-            val verify = dbAccess.pullWork()
-            val ok = verifyDB(verify, edited, plan)
-            if (!ok) {
-                dbAccess.pushWork(backup, meta)
-                dbAccess.reloadLauncher()
-                return@withContext ApplyOutcome.RolledBack(backup.name)
-            }
-            ApplyOutcome.Success(plan, backup.name)
-        } catch (e: RootDbException) {
-            ApplyOutcome.Failed(e.error)
-        } catch (e: Exception) {
-            // best effort restore if we already made a backup
-            meta?.let { runCatching { backupManager.list().firstOrNull()?.let { b -> dbAccess.pushWork(b.file, it) } } }
-            ApplyOutcome.Failed(RootError.CopyFailed(e.message ?: e.javaClass.simpleName))
-        }
-    }
-
-    suspend fun restoreBackup(name: String): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
-            val src = backupManager.restoreSource(name) ?: error("备份不存在: $name")
-            val meta = dbAccess.statOriginal()
-            dbAccess.pushWork(src, meta)
-            dbAccess.reloadLauncher()
-        }
-    }
-
     fun backups(): List<com.deskflow.data.backup.BackupEntry> = backupManager.list()
 
     private fun openReadWrite(file: File): SQLiteDatabase =
         SQLiteDatabase.openDatabase(file.absolutePath, null, SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.NO_LOCALIZED_COLLATORS)
 
-    private fun verifyDB(copy: File, edited: Workspace, plan: DiffPlan): Boolean {
-        val db = SQLiteDatabase.openDatabase(copy.absolutePath, null, SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS)
-        return try {
-            val actual = adapter.readPositions(db)
-            val touched = mutableMapOf<Long, List<Int>>()
-            plan.ops.forEach { op ->
-                when (op) {
-                    is DbOp.UpdatePosition -> touched[op.id] = listOf(op.container.toInt(), op.screen, op.cellX, op.cellY)
-                    is DbOp.Insert -> touched[op.row.id] = listOf(op.row.container.toInt(), op.row.screen, op.row.cellX, op.row.cellY)
-                    is DbOp.Delete -> touched[op.id] = emptyList()
-                    is DbOp.UpdateTitle, is DbOp.InsertScreen, is DbOp.DeleteScreen, is DbOp.UpdateScreenOrder -> Unit
-                }
+    private fun verifyDB(db: SQLiteDatabase, plan: DiffPlan): Boolean {
+        val actual = adapter.readPositions(db)
+        val touched = mutableMapOf<Long, List<Int>>()
+        plan.ops.forEach { op ->
+            when (op) {
+                is DbOp.UpdatePosition -> touched[op.id] = listOf(op.container.toInt(), op.screen, op.cellX, op.cellY)
+                is DbOp.Insert -> touched[op.row.id] = listOf(op.row.container.toInt(), op.row.screen, op.row.cellX, op.row.cellY)
+                is DbOp.Delete -> touched[op.id] = emptyList()
+                is DbOp.UpdateTitle, is DbOp.InsertScreen, is DbOp.DeleteScreen, is DbOp.UpdateScreenOrder -> Unit
             }
-            val itemsOk = touched.all { (id, expected) ->
-                if (expected.isEmpty()) !actual.containsKey(id) else actual[id] == expected
-            }
-            itemsOk && verifyTitles(db, plan) && verifyScreens(db, plan)
-        } finally {
-            db.close()
         }
+        val itemsOk = touched.all { (id, expected) ->
+            if (expected.isEmpty()) !actual.containsKey(id) else actual[id] == expected
+        }
+        return itemsOk && verifyTitles(db, plan) && verifyScreens(db, plan)
     }
 
     /** 重命名/新建的文件夹标题要真的落在 location_jan 里，否则桌面显示的还是旧名。 */
