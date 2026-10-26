@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.ComponentName
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
@@ -70,7 +71,9 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
     var message by mutableStateOf<String?>(null)
     var loadError by mutableStateOf<String?>(null)
 
-    private val iconCache = mutableMapOf<Long, ImageBitmap?>()
+    /** 必须用快照 map：图标由 IO 线程异步写入，网格在组合期直接观察逐项刷新；
+     *  普通 map 写完后网格不会重组（网格子树不读 revision），首次打开图标一直是灰块。 */
+    private val iconCache = mutableStateMapOf<Long, ImageBitmap?>()
 
     var workspace by mutableStateOf<Workspace?>(null)
         private set

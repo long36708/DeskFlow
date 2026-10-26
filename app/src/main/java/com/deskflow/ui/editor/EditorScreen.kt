@@ -476,11 +476,10 @@ private fun FolderFace(vm: DeskFlowViewModel, folder: ItemState) {
 @Composable
 private fun FolderDialog(vm: DeskFlowViewModel, folder: ItemState, onDismiss: () -> Unit) {
     val ws = vm.workspace ?: return
-    val rev = vm.revision
     val children = ws.childrenOf(folder)
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("${folder.title}（${children.size}，点图标移回桌面）rev$rev") },
+        title = { Text("${folder.title}（${children.size}，点图标移回桌面）") },
         text = {
             Column {
                 children.chunked(4).forEach { rowItems ->

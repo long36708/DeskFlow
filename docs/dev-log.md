@@ -432,6 +432,24 @@ label/包名过滤、已在桌面的置灰）+ 「更多 → 添加应用」选�
 走既有 `DbOp.Insert` 链路，id 取全局 MAX+1（12 节），标准/抽屉两风格通用（表由 `resolveTables` 选）。
 撤销、二次确认、写后验证全部复用现有机制。单测 +3（落位与 INSERT 内容、畸形 intent 拒绝、页满兜底 Dock），共 69 例。
 
+## 14. 首次打开图标全灰，重读桌面才显示（2026-10-25）
+
+现象：冷启动进编辑器网格全是灰块，点「重新读取桌面」立刻正常。重读后显示的其实还是**首次加载的位图**
+（`iconCache` 跨 load 保留、dbId 不变），说明图标早加载好了，坏的是「加载完成后通知 UI 重读缓存」这一步。
+
+根因：`iconCache` 是普通 HashMap（非快照态），唯一刷新信号是 `preloadIcons` 结束时的 `revision++`；
+但 `revision` 只在 `DeskFlowApp` 顶层作用域被读（`remember(ws, rev)`），Scaffold content 子树（WorkGrid → ItemCell）
+没有读它。顶层重组时 `pages`/`chipIds` 内容相等（`Composer.changed` 用 `Intrinsics.areEqual` 结构比较），
+strong skipping（Kotlin 2.0+ 默认开）下 content lambda 按捕获（vm、chipIds）记忆化、捕获未变 → 整棵网格跳过，
+`iconFor` 永不重读。重读桌面之所以有效，是 Loading→Ready 切走 `when` 分支销毁重组了整棵子树。
+点选/拖拽等操作会顺带刷新是靠 `selected` 等 state 的读取，掩盖了这个洞；文件夹对话框标题里的 `rev$rev`
+调试残留正是同类问题的痕迹。
+
+修复：`iconCache` 改 `mutableStateMapOf`——图标可用性本身成为可观察态，ItemCell/FolderFace/FolderDialog
+在组合期直接观察，IO 线程每写入一张位图对应格子下一帧即刷新，不依赖 revision 通知，也不必在每个渲染处
+补读 revision。附带收益：图标随加载逐个浮现（不再整批等完）、快照 map 线程安全（原 HashMap 主线程读 +
+IO 线程写本就是数据竞争）。
+
 ## 下一步
 
 - 改动编辑器手势/网格渲染后，跑 `python scripts/drag-check.py drag` 与 `tap` 做回归（JVM 单测覆盖不到手势）
