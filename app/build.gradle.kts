@@ -62,4 +62,6 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     testImplementation(libs.junit)
+    // 单测里用真 JSON 解析（android.jar 的 org.json 是抛 Stub 异常的空壳）
+    testImplementation("org.json:json:20240303")
 }

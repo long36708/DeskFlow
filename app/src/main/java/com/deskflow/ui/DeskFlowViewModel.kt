@@ -35,6 +35,9 @@ import com.deskflow.domain.classifier.DefaultRules
 import com.deskflow.domain.classifier.FrequencyPlanner
 import com.deskflow.domain.layout.DiffCalculator
 import com.deskflow.domain.layout.DiffPlan
+import com.deskflow.domain.layout.LayoutArchiveCodec
+import com.deskflow.domain.layout.LayoutImportPlan
+import com.deskflow.domain.layout.LayoutImportPlanner
 import com.deskflow.domain.layout.ReversePlanner
 import com.deskflow.domain.layout.WorkspaceEditor
 import com.deskflow.domain.layout.WorkspaceHistory
@@ -171,6 +174,7 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
                 actionTarget = null
                 coldPreview = null
                 showUsagePermDialog = false
+                importPreview = null
                 phase = Phase.Ready
                 preloadIcons(holder.workspace)
                 refreshUsageStats()
@@ -686,6 +690,64 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
             val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             getApplication<Application>().startActivity(intent)
         }.onFailure { message = "打开「使用情况访问」设置失败：${it.message}" }
+    }
+
+    // ---------- 布局方案导入导出 ----------
+
+    var importPreview by mutableStateOf<LayoutImportPlan?>(null)
+
+    /** 导出当前编辑态（含未应用的改动）为语义化布局 JSON 到用户选定的位置。 */
+    fun exportLayout(uri: Uri) {
+        val ws = workspace ?: return
+        viewModelScope.launch {
+            val stamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
+            val json = LayoutArchiveCodec.encode(ws, stamp)
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    getApplication<Application>().contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(json.toByteArray(Charsets.UTF_8))
+                        true
+                    } ?: false
+                }.getOrDefault(false)
+            }
+            message = if (ok) "布局已导出（${visiblePages().size} 页 · ${ws.liveItems.count { !it.isFolder }} 项图标）" else "导出失败：无法写入所选位置"
+        }
+    }
+
+    /** 读取布局档案并生成套用预览；解析失败给消息。 */
+    fun importLayout(uri: Uri) {
+        val ws = workspace ?: return
+        viewModelScope.launch {
+            val text = withContext(Dispatchers.IO) {
+                runCatching {
+                    getApplication<Application>().contentResolver.openInputStream(uri)?.use {
+                        it.readBytes().toString(Charsets.UTF_8)
+                    }
+                }.getOrNull()
+            }
+            if (text == null) {
+                message = "导入失败：无法读取所选文件"
+                return@launch
+            }
+            LayoutArchiveCodec.decode(text).fold(
+                onSuccess = { archive -> importPreview = LayoutImportPlanner.plan(ws, archive) },
+                onFailure = { message = "导入失败：${it.message}" },
+            )
+        }
+    }
+
+    /** 把导入计划落到内存 workspace（一次 edit = 一次撤销），写库仍走「应用」。 */
+    fun applyLayoutImport() {
+        val plan = importPreview ?: return
+        edit { ed ->
+            LayoutImportPlanner.apply(plan, ed)
+            true
+        }
+        importPreview = null
+        selected = null
+        message = "已套用布局：匹配 ${plan.stats.matchedIcons} 项、" +
+            "${plan.stats.foldersReused + plan.stats.foldersCreated} 个夹、${plan.stats.parkedItems} 项挪到备用位，" +
+            "点「应用」写入桌面"
     }
 
     // ---------- page management ----------

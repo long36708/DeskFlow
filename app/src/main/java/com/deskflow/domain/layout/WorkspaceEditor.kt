@@ -123,6 +123,16 @@ class WorkspaceEditor(private val ws: Workspace) {
         return placeDirect(item, container, screen, cell.first, cell.second)
     }
 
+    /**
+     * 布局导入专用：不检查占用、不触发交换，直接落定坐标。
+     * 调用方（LayoutImportPlanner）已按「仅未移动项占格」算好格位，顺序落地过程中
+     * 目标格即使还站着后续会搬走的项也是安全的——最终态与计划一致。
+     */
+    fun placePlanned(item: ItemState, container: Long, screen: Int, x: Int, y: Int): Boolean {
+        if (item.readOnly) return false
+        return placeDirect(item, container, screen, x, y)
+    }
+
     /** Drop dragged item onto target item: into folder, or merge two apps into a new folder. */
     fun dropOnItem(dragged: ItemState, target: ItemState): Boolean {
         if (dragged.readOnly || target.readOnly || dragged === target) return false

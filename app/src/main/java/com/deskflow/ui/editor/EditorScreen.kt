@@ -42,6 +42,8 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -80,6 +82,12 @@ import kotlin.math.roundToInt
 @Composable
 fun DeskFlowApp(vm: DeskFlowViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
+    val layoutExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri -> uri?.let(vm::exportLayout) }
+    val layoutImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let(vm::importLayout) }
     LaunchedEffect(vm.message) {
         val msg = vm.message ?: return@LaunchedEffect
         val hasAction = vm.messageActionLabel != null
@@ -112,7 +120,15 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
                             actions = {
                                 TextButton(onClick = { vm.showSearch = !vm.showSearch }) { Text("搜索") }
                                 TextButton(onClick = { vm.showPages = true }) { Text("页面") }
-                                OverflowMenu(vm)
+                                OverflowMenu(
+                                    vm,
+                                    onExportLayout = {
+                                        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US)
+                                            .format(java.util.Date())
+                                        layoutExportLauncher.launch("deskflow-layout-$stamp.json")
+                                    },
+                                    onImportLayout = { layoutImportLauncher.launch(arrayOf("application/json", "text/plain")) },
+                                )
                                 Button(
                                     onClick = vm::requestApply,
                                     enabled = vm.phase == Phase.Ready && vm.hasPendingChanges(),
@@ -278,6 +294,9 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
                 vm.coldPreview?.let { plan ->
                     ColdCollectDialog(vm, plan, onDismiss = { vm.coldPreview = null })
                 }
+                vm.importPreview?.let { plan ->
+                    LayoutImportDialog(vm, plan, onDismiss = { vm.importPreview = null })
+                }
                 vm.actionTarget?.let { item ->
                     ItemActionsDialog(vm, item, onDismiss = { vm.actionTarget = null })
                 }
@@ -338,7 +357,7 @@ private fun SelectionBar(vm: DeskFlowViewModel) {
 }
 
 @Composable
-private fun OverflowMenu(vm: DeskFlowViewModel) {
+private fun OverflowMenu(vm: DeskFlowViewModel, onExportLayout: () -> Unit, onImportLayout: () -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box {
         TextButton(onClick = { expanded = true }) { Text("更多") }
@@ -362,6 +381,20 @@ private fun OverflowMenu(vm: DeskFlowViewModel) {
             )
             DropdownMenuItem(text = { Text("一键整理") }, onClick = { expanded = false; vm.requestArrange() })
             DropdownMenuItem(text = { Text("冷门收夹（30 天未用）") }, onClick = { expanded = false; vm.requestColdCollect() })
+            DropdownMenuItem(
+                text = { Text("导出布局方案") },
+                onClick = {
+                    expanded = false
+                    onExportLayout()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("导入布局方案") },
+                onClick = {
+                    expanded = false
+                    onImportLayout()
+                },
+            )
             DropdownMenuItem(text = { Text("添加应用") }, onClick = { expanded = false; vm.showAppPicker = true })
             DropdownMenuItem(text = { Text("备份 / 恢复") }, onClick = { expanded = false; vm.showBackups = true })
             DropdownMenuItem(text = { Text("重新读取桌面") }, onClick = { expanded = false; vm.load() })
