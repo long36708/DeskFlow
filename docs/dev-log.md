@@ -553,8 +553,33 @@ vivo 读 `location_jan.title` 后，把重命名放开到普通应用图标：
 坑（待真机确认）：应用图标的显示名是否真的跟随库 title 未验证——vivo 可能直接渲染
 PackageManager label；最坏情况是改名只在编辑器内生效，写库本身无害。
 
+## 20. 使用频率：冷门收夹 + 冷门角标（2026-10-26）
+
+待办「使用频率（PACKAGE_USAGE_STATS）：冷门标记 / 按频率归页」的落地。**语义刻意选「冷门收夹 +
+角标」而非全量按频率重排**：§11 已验证用户否决搬动既有布局的整理方式（首页是模板不是整理对象），
+冷门收夹是增量形态——预览可见、一次 edit 一次撤销、widget/夹/Dock 不动。
+
+- **数据**：`UsageStatsProvider`（`data/usage/`）。`PACKAGE_USAGE_STATS` 是 AppOps 特殊权限，
+  `checkOpNoThrow(OPSTR_GET_USAGE_STATS)` 探测、`ACTION_USAGE_ACCESS_SETTINGS` 引导授权；
+  计数用 `queryEvents` 事件流数 `ACTIVITY_RESUMED`（minSdk 28 上与 MOVE_TO_FOREGROUND 同值），
+  不用 queryUsageStats 分桶（厂商 ROM 口径不一）。窗口 30 天；无权限/无统计返回空 map
+- **领域**：`FrequencyPlanner`（`domain/classifier/`，纯函数 7 例 JVM 单测）。冷门 = 桌面散放应用
+  （非夹/widget/Dock，**含首页**——回收首页黄金格子正是价值所在）的包在窗口内零启动（计数缺席也算）。
+  <2 项不收；分夹/尾组合并/续编号避让与 AutoArranger 同规则；落位从最后一页向前找首个空格
+  （冷门项自己的格子视为已腾出），全满给临时负 id 待 apply 换真实新页
+- **UI**：「更多 → 冷门收夹（30 天未用）」→ 无权限弹授权引导（去授权直达系统页，回来重试）；
+  有权限弹 `ColdCollectDialog` 预览（夹数/成员样本/落点）；采用走 `FrequencyPlanner.apply` 一次 edit。
+  冷门角标：`isColdItem` 在 ItemCell 图标右上角画 6dp 半透明圆点，计数是快照态、加载完成自动浮现
+
+已知边界：统计只覆盖「近 30 天」，双开/快捷方式按 iconPackage 兜底匹配；刚授权后系统可能还没有
+聚合数据（提示用户用一会儿再试）；多用户/分身的使用统计不在本 profile 内。
+
+真机验证点：授权引导 → 授权 → 冷门角标浮现 → 冷门收夹预览与桌面实际冷门项一致 → 采用 →
+应用 → 桌面出现「冷门」夹且成员正确；撤销上一步可回退。
+
 ## 下一步
 
+- 真机验证 20 节：授权引导/角标/冷门收夹全链路（见 20 节末）
 - 真机验证 19 节：改一个应用图标标题 → 应用 → 看桌面标签是否跟随（可能 vivo 渲染 PM label，则此功能仅编辑器内生效）
 - 真机验证 18 节：首装冷启动慢（写缓存）→ 杀进程重开图标应近即时；更新某应用后其图标应仍正确
 - 真机验证 17 节：重新读取后编辑器应为 5 列 × 9 行、与真桌面逐格对齐；Dock 5 格横排

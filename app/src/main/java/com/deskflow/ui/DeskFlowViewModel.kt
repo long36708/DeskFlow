@@ -26,10 +26,13 @@ import com.deskflow.data.db.LauncherDbAccess
 import com.deskflow.data.db.SafeWriter
 import com.deskflow.data.db.VivoWorkspaceHolder
 import com.deskflow.data.icon.IconDiskCache
+import com.deskflow.data.usage.UsageStatsProvider
 import com.deskflow.domain.classifier.ArrangeResult
 import com.deskflow.domain.classifier.AutoArranger
+import com.deskflow.domain.classifier.ColdCollectPlan
 import com.deskflow.domain.classifier.CategoryRules
 import com.deskflow.domain.classifier.DefaultRules
+import com.deskflow.domain.classifier.FrequencyPlanner
 import com.deskflow.domain.layout.DiffCalculator
 import com.deskflow.domain.layout.DiffPlan
 import com.deskflow.domain.layout.ReversePlanner
@@ -67,6 +70,7 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
     private val safeWriter = SafeWriter(app)
     private val pm = app.packageManager
     private val iconDiskCache = IconDiskCache(File(app.filesDir, "icons"))
+    private val usageStats = UsageStatsProvider(app)
 
     /** 包版本号 memo（key 里带版本，应用更新换图标后自然落到新缓存文件）。 */
     private val pkgVersions = ConcurrentHashMap<String, Long>()
@@ -84,6 +88,14 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
     var showAppPicker by mutableStateOf(false)
     var appQuery by mutableStateOf("")
     var arrangePreview by mutableStateOf<ArrangeResult?>(null)
+    var coldPreview by mutableStateOf<ColdCollectPlan?>(null)
+    var showUsagePermDialog by mutableStateOf(false)
+
+    /** 近 30 天各包前台启动计数；空 map = 无权限或系统尚无统计。冷门 = 计数缺席或为 0。 */
+    var usageCounts by mutableStateOf<Map<String, Int>>(emptyMap())
+        private set
+    var usageAccessGranted by mutableStateOf(false)
+        private set
     var showPages by mutableStateOf(false)
     var showSearch by mutableStateOf(false)
     var searchQuery by mutableStateOf("")
@@ -157,8 +169,11 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
                 conflictPrompt = null
                 confirmUndoApply = false
                 actionTarget = null
+                coldPreview = null
+                showUsagePermDialog = false
                 phase = Phase.Ready
                 preloadIcons(holder.workspace)
+                refreshUsageStats()
             }
         }
     }
@@ -603,6 +618,74 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
             append("，${result.lockedCount} 项原位不动")
             append("，点『应用』写入桌面")
         }
+    }
+
+    // ---------- 使用频率（冷门收夹 / 冷门标记） ----------
+
+    fun refreshUsageStats() {
+        viewModelScope.launch {
+            val (granted, counts) = withContext(Dispatchers.IO) {
+                usageStats.hasPermission() to usageStats.launchCounts()
+            }
+            usageAccessGranted = granted
+            usageCounts = counts
+        }
+    }
+
+    /** 冷门角标：有统计数据的会话里，包零启动即冷门（夹/widget 无组件包名，自然不标）。 */
+    fun isColdItem(item: ItemState): Boolean {
+        if (usageCounts.isEmpty()) return false
+        val pkg = item.componentPackage()?.takeIf { it.isNotEmpty() }
+            ?: item.iconPackage?.takeIf { it.isNotEmpty() }
+            ?: return false
+        return (usageCounts[pkg] ?: 0) == 0
+    }
+
+    /** 进入冷门收夹：无权限先弹授权引导；有权限算预览，无可收项给提示。 */
+    fun requestColdCollect() {
+        selected = null
+        arrangePreview = null
+        if (!usageAccessGranted) {
+            refreshUsageStats() // 用户可能刚在系统设置授权回来，先重查一次
+            showUsagePermDialog = true
+            return
+        }
+        computeColdPreview()
+    }
+
+    private fun computeColdPreview() {
+        val ws = workspace ?: return
+        if (usageCounts.isEmpty()) {
+            message = "暂无使用统计数据（刚授权后要用一会儿手机再试）"
+            return
+        }
+        val plan = FrequencyPlanner.plan(ws, usageCounts)
+        if (plan.slots.isEmpty()) {
+            message =
+                if (plan.coldCount == 0) "近 ${UsageStatsProvider.WINDOW_DAYS} 天没有未启动的散放应用"
+                else "仅 ${plan.coldCount} 项冷门（不足 ${FrequencyPlanner.MIN_COLD_ITEMS} 项），不收"
+            return
+        }
+        coldPreview = plan
+    }
+
+    /** 把冷门收夹计划落到内存 workspace（一次 edit = 一次撤销），写库仍走「应用」。 */
+    fun applyColdCollect() {
+        val plan = coldPreview ?: return
+        edit { ed ->
+            FrequencyPlanner.apply(plan, ed)
+            true
+        }
+        coldPreview = null
+        selected = null
+        message = "已把 ${plan.collectedCount} 项冷门收进 ${plan.slots.size} 个文件夹，点「应用」写入桌面"
+    }
+
+    fun openUsageAccessSettings() {
+        runCatching {
+            val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            getApplication<Application>().startActivity(intent)
+        }.onFailure { message = "打开「使用情况访问」设置失败：${it.message}" }
     }
 
     // ---------- page management ----------

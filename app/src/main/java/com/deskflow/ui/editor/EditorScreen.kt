@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -68,6 +69,7 @@ import com.deskflow.DOCK_PAGE_ID
 import com.deskflow.ui.DeskFlowViewModel
 import com.deskflow.ui.Phase
 import com.deskflow.ui.arrange.ArrangeDialog
+import com.deskflow.ui.arrange.ColdCollectDialog
 import com.deskflow.ui.pages.PageManagerDialog
 import com.deskflow.data.adapter.vivo.VivoConstants
 import com.deskflow.domain.model.ItemState
@@ -258,6 +260,24 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
                 if (vm.showPages) PageManagerDialog(vm, onDismiss = { vm.showPages = false })
                 if (vm.showBackups) BackupsDialog(vm)
                 if (vm.showAppPicker) AppPickerDialog(vm, onDismiss = { vm.showAppPicker = false })
+                if (vm.showUsagePermDialog) {
+                    AlertDialog(
+                        onDismissRequest = { vm.showUsagePermDialog = false },
+                        title = { Text("需要「使用情况访问」权限") },
+                        text = {
+                            Text(
+                                "判断冷门应用需要读取系统使用统计。\n" +
+                                    "请在接下来的列表里找到 DeskFlow 并允许「使用情况访问」，" +
+                                    "然后回到这里重新点「更多 → 冷门收夹」。",
+                            )
+                        },
+                        confirmButton = { Button(onClick = vm::openUsageAccessSettings) { Text("去授权") } },
+                        dismissButton = { TextButton(onClick = { vm.showUsagePermDialog = false }) { Text("关闭") } },
+                    )
+                }
+                vm.coldPreview?.let { plan ->
+                    ColdCollectDialog(vm, plan, onDismiss = { vm.coldPreview = null })
+                }
                 vm.actionTarget?.let { item ->
                     ItemActionsDialog(vm, item, onDismiss = { vm.actionTarget = null })
                 }
@@ -341,6 +361,7 @@ private fun OverflowMenu(vm: DeskFlowViewModel) {
                 },
             )
             DropdownMenuItem(text = { Text("一键整理") }, onClick = { expanded = false; vm.requestArrange() })
+            DropdownMenuItem(text = { Text("冷门收夹（30 天未用）") }, onClick = { expanded = false; vm.requestColdCollect() })
             DropdownMenuItem(text = { Text("添加应用") }, onClick = { expanded = false; vm.showAppPicker = true })
             DropdownMenuItem(text = { Text("备份 / 恢复") }, onClick = { expanded = false; vm.showBackups = true })
             DropdownMenuItem(text = { Text("重新读取桌面") }, onClick = { expanded = false; vm.load() })
@@ -606,6 +627,12 @@ private fun ItemCell(
                         Image(bmp, contentDescription = item.title, modifier = Modifier.fillMaxSize().padding(5.dp))
                     } else {
                         Box(Modifier.size(36.dp).background(Color(0x33999999), shape))
+                    }
+                    if (vm.isColdItem(item)) {
+                        Box(
+                            Modifier.align(Alignment.TopEnd).padding(3.dp).size(6.dp)
+                                .background(Color(0x88999999), CircleShape),
+                        )
                     }
                 }
             }
