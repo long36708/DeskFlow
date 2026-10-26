@@ -539,8 +539,23 @@ Dock 格数无 prefs 来源，维持 5（实测各风格 dock 都有 cellX=4 即
 纯 Android 图形/IO，无 JVM 可断言域逻辑。真机验证点：首装首次打开逐个解码（写缓存），杀进程
 重开应显著变快；`adb shell pm path` 确认缓存目录生成于 `/data/data/com.deskflow.debug/files/icons/`。
 
+## 19. 桌面图标标题重命名（2026-10-26）
+
+原实现只允许文件夹改名（当年注释写「库里改 title 不一定生效」）；§9 的文件夹改名实测确认
+vivo 读 `location_jan.title` 后，把重命名放开到普通应用图标：
+
+- `WorkspaceEditor.renameFolder` → `renameItem`：任何非只读项（widget 拒绝）可改名，
+  去空格/12 字截断规则不变；`UpdateTitle` 链路本来就通用（`titleChanged` → op），零新增写库代码
+- 选中底栏对非只读项显示「重命名」；`RenameFolderDialog` → `RenameDialog`（文件夹/图标文案区分）
+- 反向 plan 的 UpdateTitle 取逆（originalTitle）原本就存在，应用改名同样可撤销；
+  `verifyTitles` 对任意 UpdateTitle 行同样核对
+
+坑（待真机确认）：应用图标的显示名是否真的跟随库 title 未验证——vivo 可能直接渲染
+PackageManager label；最坏情况是改名只在编辑器内生效，写库本身无害。
+
 ## 下一步
 
+- 真机验证 19 节：改一个应用图标标题 → 应用 → 看桌面标签是否跟随（可能 vivo 渲染 PM label，则此功能仅编辑器内生效）
 - 真机验证 18 节：首装冷启动慢（写缓存）→ 杀进程重开图标应近即时；更新某应用后其图标应仍正确
 - 真机验证 17 节：重新读取后编辑器应为 5 列 × 9 行、与真桌面逐格对齐；Dock 5 格横排
 - 真机验证 16 节：搜索 → 点命中项 → 打开应用 / 强制停止（前后 `ps` 或桌面观察进程）/ 应用信息页跳转 / 定位

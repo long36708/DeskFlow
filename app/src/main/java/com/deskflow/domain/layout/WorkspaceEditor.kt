@@ -169,14 +169,15 @@ class WorkspaceEditor(private val ws: Workspace) {
     }
 
     /**
-     * 重命名文件夹。桌面图标的名字来自 PackageManager（库里改 title 不一定生效），
-     * 所以只对文件夹开放。
+     * 重命名桌面项（文件夹与应用图标均可；widget 只读项拒绝）。
+     * 文件夹名确认读库（location_jan.title）；应用图标的显示名是否跟随库 title
+     * 待真机确认（可能取 PackageManager label）——最坏情况只是编辑器内改名生效，写库无害。
      */
-    fun renameFolder(folder: ItemState, rawTitle: String): Boolean {
-        if (!folder.isFolder || folder.readOnly) return false
+    fun renameItem(item: ItemState, rawTitle: String): Boolean {
+        if (item.readOnly) return false
         val title = rawTitle.trim().take(MAX_TITLE_LEN)
         if (title.isEmpty()) return false
-        folder.title = title
+        item.title = title
         return true
     }
 

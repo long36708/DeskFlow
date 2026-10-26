@@ -97,7 +97,7 @@ class ReversePlanTest {
     fun reverseOfRenameRestoresOriginalTitle() {
         val f = folder(9, 0, 0)
         val ws = workspace(f)
-        WorkspaceEditor(ws).renameFolder(f, "新名字")
+        WorkspaceEditor(ws).renameItem(f, "新名字")
         val reverse = ReversePlanner.reverse(ws, DiffCalculator.plan(ws, 100))
         assertEquals(listOf<DbOp>(DbOp.UpdateTitle(9, "夹9")), reverse.ops)
     }

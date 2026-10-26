@@ -165,7 +165,7 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
                 vm.folderOpen?.let { folder ->
                     FolderDialog(vm, folder, onDismiss = { vm.folderOpen = null })
                 }
-                vm.renameTarget?.let { folder -> RenameFolderDialog(vm, folder) }
+                vm.renameTarget?.let { item -> RenameDialog(vm, item) }
                 vm.confirmDelete?.let { item ->
                     val childCount = if (item.isFolder) vm.workspace?.childrenOf(item)?.size ?: 0 else 0
                     AlertDialog(
@@ -308,7 +308,7 @@ private fun SelectionBar(vm: DeskFlowViewModel) {
             TextButton(onClick = { vm.startMultiSelect() }) { Text("多选") }
         } else {
             Text("已选: ${sel.title}", fontSize = 13.sp, modifier = Modifier.weight(1f))
-            if (sel.isFolder) {
+            if (!sel.readOnly) {
                 OutlinedButton(onClick = { vm.requestRename(sel) }) { Text("重命名") }
             }
             OutlinedButton(onClick = vm::requestDelete, modifier = Modifier.padding(start = 8.dp)) { Text("删除") }
@@ -679,17 +679,17 @@ private fun FolderDialog(vm: DeskFlowViewModel, folder: ItemState, onDismiss: ()
 }
 
 @Composable
-private fun RenameFolderDialog(vm: DeskFlowViewModel, folder: ItemState) {
-    var text by remember(folder) { mutableStateOf(folder.title) }
+private fun RenameDialog(vm: DeskFlowViewModel, item: ItemState) {
+    var text by remember(item) { mutableStateOf(item.title) }
     AlertDialog(
         onDismissRequest = { vm.renameTarget = null },
-        title = { Text("重命名文件夹") },
+        title = { Text(if (item.isFolder) "重命名文件夹" else "重命名图标") },
         text = {
             Column {
                 OutlinedTextField(
                     value = text,
                     onValueChange = { text = it.take(MAX_TITLE_LEN) },
-                    placeholder = { Text("文件夹名称") },
+                    placeholder = { Text(if (item.isFolder) "文件夹名称" else "图标名称") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )

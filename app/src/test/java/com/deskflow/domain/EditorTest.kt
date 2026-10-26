@@ -2,6 +2,7 @@ package com.deskflow.domain
 
 import com.deskflow.domain.layout.DiffCalculator
 import com.deskflow.domain.layout.DbOp
+import com.deskflow.domain.layout.ReversePlanner
 import com.deskflow.domain.layout.WorkspaceEditor
 import com.deskflow.domain.model.CONTAINER_DESKTOP
 import com.deskflow.domain.model.CONTAINER_DOCK
@@ -161,7 +162,7 @@ class EditorTest {
         assertFalse(ed.placeAt(a, CONTAINER_DOCK, 0, 5, 0))
     }
 
-    // ---------- folder rename ----------
+    // ---------- rename（文件夹 + 应用图标）----------
 
     private fun folderItem(id: Long, title: String) =
         ItemState(dbId = id, title = title, intent = "", itemCode = ItemType.FOLDER,
@@ -172,7 +173,7 @@ class EditorTest {
         val f = folderItem(9, "工具")
         val ws = workspace(f)
         val ed = WorkspaceEditor(ws)
-        assertTrue(ed.renameFolder(f, "  影音娱乐  "))
+        assertTrue(ed.renameItem(f, "  影音娱乐  "))
         assertEquals("影音娱乐", f.title)
 
         val plan = DiffCalculator.plan(ws, 100)
@@ -181,26 +182,45 @@ class EditorTest {
     }
 
     @Test
+    fun renameAppProducesUpdateTitleOpAndReverseRestoresOriginal() {
+        val a = app(7, 0, 0)
+        val ws = workspace(a)
+        val ed = WorkspaceEditor(ws)
+        assertTrue(ed.renameItem(a, "新名字"))
+
+        val plan = DiffCalculator.plan(ws, 100)
+        assertEquals(listOf(7L to "新名字"), plan.ops.filterIsInstance<DbOp.UpdateTitle>().map { it.id to it.title })
+
+        val reverse = ReversePlanner.reverse(ws, plan)
+        assertEquals(listOf(7L to "app7"), reverse.ops.filterIsInstance<DbOp.UpdateTitle>().map { it.id to it.title })
+    }
+
+    @Test
     fun renameTrimsLengthAndRejectsBlank() {
         val f = folderItem(9, "工具")
         val ed = WorkspaceEditor(workspace(f))
-        assertFalse(ed.renameFolder(f, "   "))
+        assertFalse(ed.renameItem(f, "   "))
         assertEquals("工具", f.title)
-        assertTrue(ed.renameFolder(f, "一二三四五六七八九十一二三四五"))
+        assertTrue(ed.renameItem(f, "一二三四五六七八九十一二三四五"))
         assertEquals(MAX_TITLE_LEN, f.title.length)
     }
 
     @Test
-    fun renameRejectsNonFolderAndNewFolderGoesThroughInsert() {
+    fun renameRejectsReadOnlyItemAndNewFolderGoesThroughInsert() {
         val a = app(1, 0, 0)
         val b = app(2, 1, 0)
         val ws = workspace(a, b)
         val ed = WorkspaceEditor(ws)
-        assertFalse(ed.renameFolder(a, "x"))
+
+        // 只读项（widget）不可改名
+        val widget = ItemState(dbId = 9, title = "时钟", intent = "", itemCode = ItemType.APP,
+            iconPackage = null, iconResource = null, container = CONTAINER_DESKTOP, screen = 1, cellX = 3, cellY = 0,
+            readOnly = true)
+        assertFalse(ed.renameItem(widget, "x"))
 
         ed.dropOnItem(a, b)
         val folder = ws.liveItems.single { it.isFolder }
-        assertTrue(ed.renameFolder(folder, "社交"))
+        assertTrue(ed.renameItem(folder, "社交"))
         val plan = DiffCalculator.plan(ws, 100)
         assertEquals("社交", plan.ops.filterIsInstance<DbOp.Insert>().single().row.title)
         assertTrue(plan.ops.none { it is DbOp.UpdateTitle }) // 新行走 INSERT，不再补 UPDATE

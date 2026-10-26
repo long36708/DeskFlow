@@ -94,7 +94,7 @@ class HistoryTest {
             iconPackage = null, iconResource = null, container = CONTAINER_DESKTOP, screen = 1, cellX = 0, cellY = 0)
         val ws = workspace(listOf(1), folder)
         val ed = WorkspaceEditor(ws)
-        ed.renameFolder(folder, "实用工具")
+        ed.renameItem(folder, "实用工具")
         assertEquals(1, DiffCalculator.plan(ws, 100).ops.count { it is DbOp.UpdateTitle })
 
         commitApplied(ws, DiffCalculator.plan(ws, 100))
@@ -109,7 +109,7 @@ class HistoryTest {
         val ed = WorkspaceEditor(ws)
         val h = WorkspaceHistory(ws)
         h.push()
-        ed.renameFolder(folder, "我的夹")
+        ed.renameItem(folder, "我的夹")
         assertEquals("我的夹", folder.title)
 
         assertTrue(h.undo())

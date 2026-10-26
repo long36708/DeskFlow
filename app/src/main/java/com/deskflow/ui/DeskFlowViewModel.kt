@@ -334,18 +334,18 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
         edit { ed -> ed.ejectChild(child, currentScreenId) }
     }
 
-    /** 打开重命名输入框；只有文件夹的标题存在库里，图标名改了不生效所以不开放。 */
-    fun requestRename(folder: ItemState) {
-        if (!folder.isFolder) return
-        renameTarget = folder
+    /** 打开重命名输入框；文件夹与普通图标可改（widget 只读项不可）。 */
+    fun requestRename(item: ItemState) {
+        if (item.readOnly) return
+        renameTarget = item
     }
 
     fun commitRename(raw: String) {
-        val folder = renameTarget ?: return
+        val target = renameTarget ?: return
         renameTarget = null
         var ok = false
         edit { ed ->
-            ok = ed.renameFolder(folder, raw)
+            ok = ed.renameItem(target, raw)
             ok
         }
         if (!ok) message = "名称不能为空"
