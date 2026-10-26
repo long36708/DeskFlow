@@ -234,6 +234,9 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
                 if (vm.showPages) PageManagerDialog(vm, onDismiss = { vm.showPages = false })
                 if (vm.showBackups) BackupsDialog(vm)
                 if (vm.showAppPicker) AppPickerDialog(vm, onDismiss = { vm.showAppPicker = false })
+                vm.actionTarget?.let { item ->
+                    ItemActionsDialog(vm, item, onDismiss = { vm.actionTarget = null })
+                }
             }
         }
     }
@@ -343,13 +346,73 @@ private fun SearchPanel(vm: DeskFlowViewModel) {
             else -> LazyRow(contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
                 items(hits) { hit ->
                     AssistChip(
-                        onClick = { vm.locate(hit) },
+                        onClick = { vm.requestItemActions(hit) },
                         label = { Text("${hit.title.take(12)} · ${vm.locationLabel(hit)}", maxLines = 1) },
                         modifier = Modifier.padding(end = 4.dp),
                     )
                 }
             }
         }
+    }
+}
+
+/** 搜索命中项的快捷操作：打开 / 强制停止 / 应用信息 / 定位。无组件 intent 的项（夹、widget）只有定位。 */
+@Composable
+private fun ItemActionsDialog(vm: DeskFlowViewModel, item: ItemState, onDismiss: () -> Unit) {
+    val launchable = vm.actionTargetLaunchable(item)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val bmp = vm.iconFor(item)
+                if (bmp != null) {
+                    Image(bmp, contentDescription = null, modifier = Modifier.size(28.dp))
+                } else {
+                    Box(Modifier.size(28.dp).background(Color(0x33999999), RoundedCornerShape(6.dp)))
+                }
+                Text("  ${item.title.take(14)}", fontSize = 16.sp, maxLines = 1)
+            }
+        },
+        text = {
+            Column {
+                if (launchable) {
+                    Text(
+                        item.intent.substringBeforeLast('/'),
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.size(2.dp))
+                    ActionRow("打开应用") { vm.launchApp(item) }
+                    ActionRow("强制停止") { vm.forceStopApp(item) }
+                    ActionRow("应用信息") { vm.openAppDetails(item) }
+                }
+                ActionRow("定位到桌面") {
+                    vm.actionTarget = null
+                    vm.locate(item)
+                }
+                if (launchable) {
+                    Text(
+                        "「强制停止」经 root shell 执行 am force-stop，应用的后台推送会暂停到它下次启动。",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+@Composable
+private fun ActionRow(label: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, fontSize = 14.sp)
     }
 }
 

@@ -157,6 +157,9 @@ class SafeWriter(context: Context) {
 
     fun backups(): List<com.deskflow.data.backup.BackupEntry> = backupManager.list()
 
+    /** 强制停止第三方应用（root shell，不涉及桌面库）。 */
+    fun forceStopPackage(pkg: String): Boolean = dbAccess.forceStop(pkg)
+
     private fun openReadWrite(file: File): SQLiteDatabase =
         SQLiteDatabase.openDatabase(file.absolutePath, null, SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.NO_LOCALIZED_COLLATORS)
 

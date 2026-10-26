@@ -2,6 +2,9 @@ package com.deskflow.ui
 
 import android.app.Application
 import android.content.ComponentName
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -126,6 +129,7 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
                 multiSelected.clear()
                 conflictPrompt = null
                 confirmUndoApply = false
+                actionTarget = null
                 phase = Phase.Ready
                 preloadIcons(holder.workspace)
             }
@@ -616,6 +620,68 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
         item.container == CONTAINER_DESKTOP -> "第${visiblePages().indexOfFirst { it.screenId == item.screen } + 1}页"
         item.container >= 0 -> "文件夹 ${workspace?.byId(item.container)?.title ?: ""}".trim()
         else -> "其它"
+    }
+
+    // ---------- 搜索结果快捷操作（打开 / 强制停止 / 应用信息） ----------
+
+    /** 搜索命中项的操作菜单目标；null = 不显示。 */
+    var actionTarget by mutableStateOf<ItemState?>(null)
+
+    fun requestItemActions(item: ItemState) {
+        actionTarget = item
+    }
+
+    /** intent 为 `pkg/activity` 组件格式的项才可打开/停止/查详情。 */
+    fun actionTargetLaunchable(item: ItemState): Boolean = item.intent.contains('/')
+
+    fun launchApp(item: ItemState) {
+        actionTarget = null
+        val comp = componentOf(item) ?: run {
+            message = "该项没有可打开的目标"
+            return
+        }
+        runCatching {
+            val intent = Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_LAUNCHER)
+                .setComponent(comp)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            getApplication<Application>().startActivity(intent)
+        }.onFailure { message = "打开失败：${it.message}" }
+    }
+
+    fun forceStopApp(item: ItemState) {
+        actionTarget = null
+        val comp = componentOf(item) ?: run {
+            message = "该项没有对应的包"
+            return
+        }
+        val pkg = comp.packageName
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { runCatching { safeWriter.forceStopPackage(pkg) }.getOrDefault(false) }
+            message = if (ok) "已强制停止 $pkg（推送会暂停到应用下次启动）" else "强制停止失败：需要 Root 授权"
+        }
+    }
+
+    fun openAppDetails(item: ItemState) {
+        actionTarget = null
+        val comp = componentOf(item) ?: run {
+            message = "该项没有对应的包"
+            return
+        }
+        runCatching {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${comp.packageName}"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            getApplication<Application>().startActivity(intent)
+        }.onFailure { message = "打开应用信息失败：${it.message}" }
+    }
+
+    private fun componentOf(item: ItemState): ComponentName? {
+        val comp = item.intent.takeIf { it.contains('/') } ?: return null
+        val idx = comp.lastIndexOf('/')
+        val pkg = comp.substring(0, idx)
+        val cls = comp.substring(idx + 1)
+        if (pkg.isEmpty() || cls.isEmpty()) return null
+        return ComponentName(pkg, cls)
     }
 
     /** 跳到该项所在页并选中；文件夹内的项则直接打开文件夹。 */

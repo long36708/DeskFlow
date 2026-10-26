@@ -92,4 +92,7 @@ class LauncherDbAccess(private val context: Context) {
                 "--activity-reset-task-if-needed -f 0x10000000",
         )
     }
+
+    /** 强制停止任意包（root shell）；搜索结果快捷操作用。 */
+    fun forceStop(pkg: String): Boolean = ok(exec("am force-stop '$pkg'"))
 }

@@ -484,6 +484,19 @@ IO 池，收敛可见性）。
 未落库行跳过；快照 diff 4 例）。未真机验证：冲突弹窗真实触发路径（需编辑期间动桌面）、
 反向写回的真机回滚正确性——下一步优先。
 
+## 16. 搜索命中项快捷操作：打开 / 强制停止 / 应用信息（2026-10-26）
+
+搜索原来只做「定位」（跳到该项所在页/夹）。现在点命中项弹出操作菜单 `ItemActionsDialog`：
+**打开应用**（显式组件 + MAIN/LAUNCHER + NEW_TASK，`startActivity` 失败进 snackbar）、
+**强制停止**（`LauncherDbAccess.forceStop` 复用 nsenter 包装的 root shell 执行 `am force-stop`，
+成功提示推送会暂停到下次启动；失败提示需要 Root）、**应用信息**（`ACTION_APPLICATION_DETAILS_SETTINGS`
++ `package:` URI，无需 root）、**定位到桌面**（保留原行为，夹内子项会打开所在夹）。
+
+能力边界：只有 intent 为 `pkg/activity` 组件格式的项可打开/停止/查详情（`actionTargetLaunchable`），
+文件夹与 widget（intent 为空）仅显示定位。包可见性无需新声明——manifest 已有 MAIN/LAUNCHER `<queries>`。
+强制停止不触碰 launcher.db，与编辑/写回链路互不影响；对话框状态在 `load()` 时重置防过期引用。
+JVM 测试无可断言的域逻辑（纯 Android Context/Shell 调用），行为需真机验证。
+
 ## 下一步
 
 - 改动编辑器手势/网格渲染后，跑 `python scripts/drag-check.py drag` 与 `tap` 做回归（JVM 单测覆盖不到手势）
