@@ -138,10 +138,15 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
 
                         Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 6.dp)) {
                             val itemsOnPage = vm.visibleItems()
+                            val grid = ws.grid
                             if (vm.isDockPage()) {
-                                WorkGrid(vm, itemsOnPage, cols = 5, rows = 1, modifier = Modifier.fillMaxWidth().aspectRatio(5f).align(Alignment.TopCenter))
+                                WorkGrid(
+                                    vm, itemsOnPage,
+                                    cols = grid.dockCells, rows = 1,
+                                    modifier = Modifier.fillMaxWidth().aspectRatio(grid.dockCells.toFloat()).align(Alignment.TopCenter),
+                                )
                             } else {
-                                WorkGrid(vm, itemsOnPage, cols = 4, rows = 7, modifier = Modifier.fillMaxSize())
+                                WorkGrid(vm, itemsOnPage, cols = grid.columns, rows = grid.rows, modifier = Modifier.fillMaxSize())
                             }
                         }
 

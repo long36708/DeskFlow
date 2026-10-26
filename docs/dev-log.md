@@ -497,8 +497,34 @@ IO 池，收敛可见性）。
 强制停止不触碰 launcher.db，与编辑/写回链路互不影响；对话框状态在 `load()` 时重置防过期引用。
 JVM 测试无可断言的域逻辑（纯 Android Context/Shell 调用），行为需真机验证。
 
+## 17. 网格从 launcher prefs 动态读取（修「桌面一行 5 个、应用里一行 4 个」）（2026-10-26）
+
+**取证**：真机实拉 `com.bbk.launcher2.layout.xml`（user_de/shared_prefs）+ launcher.db 对照——
+网格权威来源是 prefs 的 `newCountX/newCountY`（标准）与 `newCountX_drawer/newCountY_drawer`（抽屉）；
+当前值 5×9 / 4×7，与 `location_jan` 数据完全吻合（cellX 0..4、cellY 0..8、spanX=5 通栏件）。
+`_2` 后缀键（4×7）是旧布局残留——正是当初硬编码 GridConfig=4×7 的来源，用户改过系统「桌面布局」设置后
+编辑器没跟着变。库里无网格字段，`desktopStyle` 只有指针；各风格表实际列数不同
+（jan=5 列、jan_drawer/feb=4、simple=3），也不能直接从数据反推（桌面稀疏时反推会偏小）。
+
+**实现**：新增 `VivoLayoutPrefs`（纯解析器，可 JVM 单测：正则抠 `<int name=... value=...>`，
+2..8/2..12 钳位，缺键整组放弃）+ `LauncherDbAccess.readLayoutPrefs()`（root `cat` prefs 路径）。
+`SafeWriter` 的 load 与写后基线读取统一走 `resolveGrid(db)`：先 `resolveTables` 定风格，
+再按风格取 prefs 网格，缺失退回默认 `GridConfig()`；风格异常仍包装成 `RootDbException`。
+写回前的 fresh 现读（`readChecked`）同样走 `resolveGrid`，保证与 baseline 网格同源。
+`adapter.read(db, grid)` 接受外部网格；`VivoSnapshot` 改携 `tables`（保留 styleLabel 访问器）。
+UI 的 WorkGrid 列/行/Dock 格数与 Dock 宽高比全部改用 `ws.grid`（原先硬编码 4×7、Dock 5）。
+Dock 格数无 prefs 来源，维持 5（实测各风格 dock 都有 cellX=4 即 ≥5 格）。
+写回链路（DiffCalculator/EditorServer/AutoArranger 全走 `ws.grid`）无需改动自动适配 5×9。
+
+单测 82 → 86（prefs 解析 4 例：双风格读取、按风格取值、缺键回退、垃圾输入钳位）。
+真机验证点：重新读取应显示 5 列 × 9 行，图标与真桌面逐格对齐；改系统桌面布局后再重读应跟随。
+
 ## 下一步
 
+- 真机验证 17 节：重新读取后编辑器应为 5 列 × 9 行、与真桌面逐格对齐；Dock 5 格横排
+- 真机验证 16 节：搜索 → 点命中项 → 打开应用 / 强制停止（前后 `ps` 或桌面观察进程）/ 应用信息页跳转 / 定位
+- 真机验证 15 节：冲突检测（应用前在真桌面拖一个图标再点「应用」，应弹外部改动提示）；批量多选
+  （加减选/整页选/收夹/跨页/批量删除 + 撤销上一步）；撤销上次应用（应用一批改动后反向回退，逐项核对桌面）
 - 改动编辑器手势/网格渲染后，跑 `python scripts/drag-check.py drag` 与 `tap` 做回归（JVM 单测覆盖不到手势）
 - 真机验证本轮（APK 已 `adb install -r` 到 10AF59276U006BH，待点按）：点一次「一键整理」，预览应显示
   「待归类 87 项 · 收进 0 项 · 124 项保持原位不动」、「将新建 0 个文件夹」；采用后桌面**一格都不该动**

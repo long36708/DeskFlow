@@ -6,6 +6,8 @@ import com.deskflow.data.adapter.vivo.UnsupportedDesktopStyleException
 import com.deskflow.data.adapter.vivo.VivoConstants
 import com.deskflow.data.adapter.vivo.VivoLauncherAdapter
 import com.deskflow.data.adapter.vivo.VivoSnapshot
+import com.deskflow.data.adapter.vivo.WorkspaceTables
+import com.deskflow.domain.model.GridConfig
 import com.deskflow.data.backup.BackupManager
 import com.deskflow.domain.layout.DbOp
 import com.deskflow.domain.layout.DiffCalculator
@@ -49,7 +51,8 @@ class SafeWriter(context: Context) {
             val work = dbAccess.pullWork()
             val db = openReadWrite(work)
             try {
-                val snapshot = readChecked(db)
+                val (tables, grid) = resolveGrid(db)
+                val snapshot = adapter.read(db, grid)
                 baseline = snapshot
                 VivoWorkspaceHolder(snapshot.workspace, snapshot.maxId)
             } finally {
@@ -123,8 +126,9 @@ class SafeWriter(context: Context) {
                 dbAccess.reloadLauncher()
                 return ApplyOutcome.RolledBack(backup.name)
             }
-            // 写后状态成为新基线（否则二次 apply 会误报外部变化）
-            baseline = readChecked(db)
+            // 写后状态成为新基线；网格与 load 时同源解析，保证基线与编辑器一致
+            val (tables, grid) = resolveGrid(db)
+            baseline = adapter.read(db, grid)
         } finally {
             db.close()
         }
@@ -136,6 +140,15 @@ class SafeWriter(context: Context) {
         val changes = WorkspaceDiff.summarize(loaded.workspace, fresh.workspace)
         return if (changes.isEmpty()) null else changes.joinToString("；")
     }
+
+    /** 风格表解析 + 网格解析（launcher prefs 优先，缺失退回默认 4×7）。 */
+    private fun resolveGrid(db: SQLiteDatabase): Pair<WorkspaceTables, GridConfig> =
+        try {
+            val tables = adapter.resolveTables(db)
+            tables to (dbAccess.readLayoutPrefs()?.gridFor(tables) ?: GridConfig())
+        } catch (e: UnsupportedDesktopStyleException) {
+            throw RootDbException(RootError.UnsupportedDesktopStyle("当前 currentDesktop=${e.currentDesktop}，仅支持标准(1000)与抽屉(1002)"))
+        }
 
     suspend fun restoreBackup(name: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
@@ -150,7 +163,8 @@ class SafeWriter(context: Context) {
 
     private fun readChecked(db: SQLiteDatabase): VivoSnapshot =
         try {
-            adapter.read(db)
+            // 与 baseline/load 同源解析网格，否则两份快照网格不一致
+            adapter.read(db, resolveGrid(db).second)
         } catch (e: UnsupportedDesktopStyleException) {
             throw RootDbException(RootError.UnsupportedDesktopStyle("当前 currentDesktop=${e.currentDesktop}，仅支持标准(1000)与抽屉(1002)"))
         }

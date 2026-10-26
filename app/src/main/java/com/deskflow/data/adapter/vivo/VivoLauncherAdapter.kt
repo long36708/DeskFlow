@@ -15,6 +15,8 @@ import com.deskflow.domain.model.Workspace
 object VivoConstants {
     const val LAUNCHER_PACKAGE = "com.bbk.launcher2"
     const val DB_PATH = "/data/user_de/0/com.bbk.launcher2/databases/launcher.db"
+    /** 网格布局（列数/行数）存在 launcher 的 layout prefs，标准/抽屉各一套。 */
+    const val LAYOUT_PREFS_PATH = "/data/user_de/0/com.bbk.launcher2/shared_prefs/com.bbk.launcher2.layout.xml"
     const val ATTRIBUTE_TABLE = "attribute"
     const val DESKTOP_STYLE_TABLE = "desktopStyle"
 }
@@ -38,7 +40,9 @@ object VivoDesktopStyles {
 class UnsupportedDesktopStyleException(val currentDesktop: Long?) :
     Exception("不支持的桌面风格 (currentDesktop=${currentDesktop ?: "未知"})，当前仅支持标准与抽屉风格")
 
-class VivoSnapshot(val workspace: Workspace, val maxId: Long, val styleLabel: String)
+class VivoSnapshot(val workspace: Workspace, val maxId: Long, val tables: WorkspaceTables) {
+    val styleLabel: String get() = tables.label
+}
 
 class VivoLauncherAdapter {
 
@@ -54,7 +58,8 @@ class VivoLauncherAdapter {
         return VivoDesktopStyles.resolve(value) ?: throw UnsupportedDesktopStyleException(value)
     }
 
-    fun read(db: SQLiteDatabase): VivoSnapshot {
+    /** [grid] 来自 launcher prefs（按风格解析）；缺省时用默认 4×7。 */
+    fun read(db: SQLiteDatabase, grid: GridConfig = GridConfig()): VivoSnapshot {
         val tables = resolveTables(db)
         val pages = mutableListOf<ScreenPage>()
         db.rawQuery(
@@ -107,7 +112,7 @@ class VivoLauncherAdapter {
         // _id 在所有样式表间是同一命名空间（切换样式时按原 id 复用），新行必须避开全部表的占用
         val maxId = globalMaxId(db)
 
-        return VivoSnapshot(Workspace(GridConfig(), pages, items.toMutableList()), maxId, tables.label)
+        return VivoSnapshot(Workspace(grid, pages, items.toMutableList()), maxId, tables)
     }
 
     private fun globalMaxId(db: SQLiteDatabase): Long {

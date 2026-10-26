@@ -2,6 +2,7 @@ package com.deskflow.data.db
 
 import android.content.Context
 import com.deskflow.data.adapter.vivo.VivoConstants
+import com.deskflow.data.adapter.vivo.VivoLayoutPrefs
 import com.topjohnwu.superuser.Shell
 import java.io.File
 
@@ -95,4 +96,11 @@ class LauncherDbAccess(private val context: Context) {
 
     /** 强制停止任意包（root shell）；搜索结果快捷操作用。 */
     fun forceStop(pkg: String): Boolean = ok(exec("am force-stop '$pkg'"))
+
+    /** 读 launcher prefs 里的桌面网格布局；读不到（root 失败/文件缺失）返回 null，调用方退回默认 4×7。 */
+    fun readLayoutPrefs(): VivoLayoutPrefs? {
+        val r = exec("cat ${VivoConstants.LAYOUT_PREFS_PATH}")
+        if (!ok(r)) return null
+        return VivoLayoutPrefs.parse(r.out.joinToString("\n"))
+    }
 }
