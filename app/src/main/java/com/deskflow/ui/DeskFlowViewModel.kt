@@ -271,6 +271,9 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
         return if (isDockPage()) ws.dockItems() else ws.pageItems(currentScreenId)
     }
 
+    /** pager 每页渲染自己的条目用（visibleItems 只反映当前页）。 */
+    fun pageItems(screenId: Int): List<ItemState> = workspace?.pageItems(screenId) ?: emptyList()
+
     fun tapItem(item: ItemState) {
         if (multiSelectMode) {
             when {
@@ -569,14 +572,13 @@ class DeskFlowViewModel(app: Application) : AndroidViewModel(app) {
             ws.pages.any { it.isNew || it.isDeleted || it.order != it.originalOrder }
     }
 
-    fun neighborScreen(dir: Int): Int? {
+    /** 拖拽边缘换页用：只在桌面页间移动（不含 Dock——pager 没有 Dock 页，拖进 Dock 走页签）。 */
+    fun neighborDesktopScreen(dir: Int): Int? {
         val ws = workspace ?: return null
-        val chips = listOf(DOCK_PAGE_ID) + ws.pages.map { it.screenId }
-        if (currentScreenId == DOCK_PAGE_ID || dir == 0) return null
-        val idx = chips.indexOf(currentScreenId)
-        if (idx < 0) return null
-        val target = idx + dir
-        return chips.getOrNull(target)
+        val pages = ws.pages.filter { !it.isDeleted }.sortedBy { it.order }
+        val idx = pages.indexOfFirst { it.screenId == currentScreenId }
+        if (idx < 0 || dir == 0) return null
+        return pages.getOrNull(idx + dir)?.screenId
     }
 
     fun dropToPage(item: ItemState, screenId: Int) {

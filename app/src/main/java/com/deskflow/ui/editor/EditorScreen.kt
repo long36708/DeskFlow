@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -54,6 +56,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -161,17 +164,68 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
                             }
                         }
 
-                        Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 6.dp)) {
-                            val itemsOnPage = vm.visibleItems()
+                        val gridDrag = remember { GridDragState() }
+                        var gridBoxCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+                        Box(
+                            Modifier.weight(1f).fillMaxWidth().padding(horizontal = 6.dp)
+                                .onGloballyPositioned { gridBoxCoords = it },
+                        ) {
                             val grid = ws.grid
                             if (vm.isDockPage()) {
                                 WorkGrid(
-                                    vm, itemsOnPage,
+                                    vm, gridDrag, vm.visibleItems(),
                                     cols = grid.dockCells, rows = 1,
                                     modifier = Modifier.fillMaxWidth().aspectRatio(grid.dockCells.toFloat()).align(Alignment.TopCenter),
                                 )
                             } else {
-                                WorkGrid(vm, itemsOnPage, cols = grid.columns, rows = grid.rows, modifier = Modifier.fillMaxSize())
+                                val pagerState = rememberPagerState(
+                                    initialPage = pages.indexOfFirst { it.screenId == vm.currentScreenId }.coerceAtLeast(0),
+                                ) { pages.size }
+                                // 滑动落定 → 切当前页（页签、visibleItems 跟随）
+                                LaunchedEffect(pagerState.settledPage, pages) {
+                                    pages.getOrNull(pagerState.settledPage)?.let { page ->
+                                        if (vm.currentScreenId != page.screenId) vm.currentScreenId = page.screenId
+                                    }
+                                }
+                                // 页签/拖拽边缘换页改了当前页 → pager 动画跟过去（滑动路径回到这里时是同值 no-op）
+                                LaunchedEffect(vm.currentScreenId, pages) {
+                                    val idx = pages.indexOfFirst { it.screenId == vm.currentScreenId }
+                                    if (idx >= 0 && idx != pagerState.currentPage) pagerState.animateScrollToPage(idx)
+                                }
+                                HorizontalPager(
+                                    state = pagerState,
+                                    modifier = Modifier.fillMaxSize(),
+                                    beyondViewportPageCount = 1, // 边缘换页时源页必须保活，拖拽手势才不中断
+                                ) { pageIndex ->
+                                    pages.getOrNull(pageIndex)?.let { page ->
+                                        WorkGrid(
+                                            vm, gridDrag, vm.pageItems(page.screenId),
+                                            cols = grid.columns, rows = grid.rows,
+                                            modifier = Modifier.fillMaxSize(),
+                                        )
+                                    }
+                                }
+                            }
+                            // 拖拽幽灵：窗口坐标锁定手指，源格子隐藏但仍持有手势流（换页不中断拖拽）
+                            gridDrag.item?.let { dragItem ->
+                                val box = gridBoxCoords
+                                val density = LocalDensity.current
+                                if (box != null) {
+                                    val pos = box.windowToLocal(gridDrag.originWindow) +
+                                        Offset(dragItem.cellX * gridDrag.cellW, dragItem.cellY * gridDrag.cellH) +
+                                        gridDrag.offset
+                                    ItemCell(
+                                        vm, dragItem,
+                                        dragging = true, selected = false,
+                                        modifier = Modifier
+                                            .zIndex(2f)
+                                            .offset { IntOffset(pos.x.roundToInt(), pos.y.roundToInt()) }
+                                            .size(
+                                                with(density) { (dragItem.spanX * gridDrag.cellW).toDp() },
+                                                with(density) { (dragItem.spanY * gridDrag.cellH).toDp() },
+                                            ),
+                                    )
+                                }
                             }
                         }
 
@@ -502,9 +556,24 @@ private fun ActionRow(label: String, onClick: () -> Unit) {
     }
 }
 
+/**
+ * 跨页共享的网格拖拽状态（提升到 DeskFlowApp，桌面各页与 Dock 的 WorkGrid 共用）。
+ * 被拖项由幽灵层（DeskFlowApp 里的 ItemCell 副本）按窗口坐标渲染，源格子 alpha 隐藏但
+ * 保持组合——pager 换页时手势流不中断，拖出边缘换页才能在松手时落到目标页。
+ */
+class GridDragState {
+    var item by mutableStateOf<ItemState?>(null)
+    var offset by mutableStateOf(Offset.Zero) // px，相对源网格里 item 的原位
+    var switchedTarget by mutableStateOf<Int?>(null)
+    var originWindow by mutableStateOf(Offset.Zero) // 源网格左上角（窗口坐标），拖拽开始时冻结
+    var cellW by mutableStateOf(0f)
+    var cellH by mutableStateOf(0f)
+}
+
 @Composable
 private fun WorkGrid(
     vm: DeskFlowViewModel,
+    drag: GridDragState,
     pageItems: List<ItemState>,
     cols: Int,
     rows: Int,
@@ -512,9 +581,6 @@ private fun WorkGrid(
 ) {
     var sizePx by remember { mutableStateOf(IntSize.Zero) }
     var gridCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    var dragItem by remember { mutableStateOf<ItemState?>(null) }
-    var dragOffset by remember { mutableStateOf(Offset.Zero) }
-    var dragPageSwitch by remember { mutableStateOf<Int?>(null) }
     val density = LocalDensity.current
 
     val cellW = if (sizePx.width == 0) 0 else sizePx.width / cols
@@ -549,19 +615,20 @@ private fun WorkGrid(
         // 遍历顺序必须稳定：把被拖项挪到末尾会让它的 pointerInput 节点被销毁重建，
         // 拖拽协程在 onDragStart 当帧就被取消（表现为长按拖拽完全无反应）。提层改用 zIndex。
         pageItems.forEach { item ->
-            val dragging = dragItem === item
-            val xPx = (item.cellX * cellW + if (dragging) dragOffset.x.roundToInt() else 0)
-            val yPx = (item.cellY * cellH + if (dragging) dragOffset.y.roundToInt() else 0)
+            val dragging = drag.item === item
+            val xPx = (item.cellX * cellW + if (dragging) drag.offset.x.roundToInt() else 0)
+            val yPx = (item.cellY * cellH + if (dragging) drag.offset.y.roundToInt() else 0)
             val wDp = with(density) { (item.spanX * cellW).toDp() }
             val hDp = with(density) { (item.spanY * cellH).toDp() }
 
             ItemCell(
                 vm = vm,
                 item = item,
-                dragging = dragging,
+                dragging = false, // 视觉由幽灵层负责，源格子隐藏但保持组合以持有手势流
                 selected = vm.selected === item,
                 modifier = Modifier
                     .zIndex(if (dragging) 1f else 0f)
+                    .alpha(if (dragging) 0f else 1f)
                     .offset { IntOffset(xPx, yPx) }
                     .size(wDp, hDp)
                     .pointerInput(item, cellW, cellH, vm.multiSelectMode) {
@@ -569,37 +636,37 @@ private fun WorkGrid(
                         if (vm.multiSelectMode) return@pointerInput // 多选下禁拖：点选语义与拖拽冲突
                         detectDragGesturesAfterLongPress(
                             onDragStart = {
-                                dragItem = item
-                                dragOffset = Offset.Zero
-                                dragPageSwitch = null
+                                drag.item = item
+                                drag.offset = Offset.Zero
+                                drag.switchedTarget = null
+                                drag.cellW = cellW.toFloat()
+                                drag.cellH = cellH.toFloat()
+                                drag.originWindow = gridCoords?.localToWindow(Offset.Zero) ?: Offset.Zero
                             },
                             onDrag = { change, pan ->
-                                dragOffset += pan
+                                drag.offset += pan
                                 change.consume()
                                 if (!vm.isDockPage()) {
                                     val lx = gridCoords?.windowToLocal(change.position)?.x ?: change.position.x
                                     val w = sizePx.width
-                                    if (lx < -cellW * 0.5f) {
-                                        val t = vm.neighborScreen(-1)
-                                        if (t != null && t != vm.currentScreenId) {
-                                            vm.currentScreenId = t
-                                            dragPageSwitch = t
-                                        }
-                                    } else if (lx > w + cellW * 1.5f) {
-                                        val t = vm.neighborScreen(1)
-                                        if (t != null && t != vm.currentScreenId) {
-                                            vm.currentScreenId = t
-                                            dragPageSwitch = t
-                                        }
+                                    val target = when {
+                                        lx < -cellW * 0.5f -> vm.neighborDesktopScreen(-1)
+                                        lx > w + cellW * 1.5f -> vm.neighborDesktopScreen(1)
+                                        else -> null
+                                    }
+                                    if (target != null && target != vm.currentScreenId) {
+                                        vm.currentScreenId = target
+                                        drag.switchedTarget = target
                                     }
                                 }
                             },
                             onDragEnd = {
-                                val switched = dragPageSwitch
-                                val movedX = (dragOffset.x / cellW).roundToInt()
-                                val movedY = (dragOffset.y / cellH).roundToInt()
-                                dragItem = null
-                                dragOffset = Offset.Zero
+                                val switched = drag.switchedTarget
+                                val movedX = (drag.offset.x / cellW).roundToInt()
+                                val movedY = (drag.offset.y / cellH).roundToInt()
+                                drag.item = null
+                                drag.offset = Offset.Zero
+                                drag.switchedTarget = null
                                 if (switched != null) {
                                     vm.dropToPage(item, switched)
                                 } else {
@@ -611,8 +678,9 @@ private fun WorkGrid(
                                 }
                             },
                             onDragCancel = {
-                                dragItem = null
-                                dragOffset = Offset.Zero
+                                drag.item = null
+                                drag.offset = Offset.Zero
+                                drag.switchedTarget = null
                             },
                         )
                     }

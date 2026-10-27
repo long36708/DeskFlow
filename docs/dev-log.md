@@ -607,8 +607,29 @@ PackageManager label；最坏情况是改名只在编辑器内生效，写库本
 缺页新建+收容、不动项占格 9 例）。真机验证点：导出 → 恢复出厂或删应用后导入 → 布局还原度；
 跨风格（标准↔抽屉）导入的网格警告路径。
 
+## 22. 左右滑动翻页（2026-10-27）
+
+桌面页改 HorizontalPager：横滑翻页（与系统桌面肌肉记忆一致——图标上直接横滑也是翻页，
+长按后拖拽才是移动图标），页签/边缘换页与滑动双向同步（settledPage → currentScreenId；
+currentScreenId → animateScrollToPage，同值 no-op 防回环）。Dock 不是 pager 页（保持原独立视图）。
+
+**拖拽状态提升（GridDragState）+ 幽灵层**：原实现被拖项渲染在页内，换页 = 页内列表整体替换，
+pointerInput 节点销毁（§8 同款死法）——拖出边缘换页时手势中断、`dropToPage` 永不执行
+（表现为图标弹回原页）。现在：拖拽状态提升到 DeskFlowApp 共享；被拖项源格子 alpha 隐藏但
+保持组合（`beyondViewportPageCount = 1` 保证翻页动画期间源页不卸载），幽灵 ItemCell 以
+拖拽开始时冻结的窗口坐标 + 实时 offset 渲染、手指锁定，与 pager 滑动解耦。松手仍按
+switchedTarget/dropOnCell 落子，§8 的 zIndex 提层保序约束原样保留。
+
+附带：`neighborScreen` → `neighborDesktopScreen`——原页序列表含 Dock，第 1 页向左会翻进
+Dock，而 pager 没有 Dock 页；拖进 Dock 走页签（原 `dropToPage` 本就支持 Dock）。
+
+无新域逻辑，JVM 无可断言项。真机验证点：滑动翻页跟手/落定对齐；长按拖拽不误触翻页；
+拖出边缘换页后松手落到目标页（此前必中断的路径）；`python scripts/drag-check.py drag`
+与 `tap` 回归。
+
 ## 下一步
 
+- 真机验证 22 节：滑动翻页 + 拖拽共存（`python scripts/drag-check.py drag`、`tap` 回归）
 - 真机验证 21 节：导出布局 → 导入（同机还原 + 改几个位置再导入看对齐）；SAF 文件读写
 - 真机验证 20 节：授权引导/角标/冷门收夹全链路（见 20 节末）
 - 真机验证 19 节：改一个应用图标标题 → 应用 → 看桌面标签是否跟随（可能 vivo 渲染 PM label，则此功能仅编辑器内生效）
