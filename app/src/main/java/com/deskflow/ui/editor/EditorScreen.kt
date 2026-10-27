@@ -22,12 +22,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -55,6 +57,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
@@ -143,8 +146,17 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
                     Column(Modifier.fillMaxSize().padding(pad)) {
                         if (vm.showSearch) SearchPanel(vm)
 
-                        LazyRow(contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+                        val chipListState = rememberLazyListState()
+                        LaunchedEffect(vm.currentScreenId, chipIds) {
+                            val idx = chipIds.indexOf(vm.currentScreenId)
+                            if (idx >= 0) chipListState.animateScrollToItem(idx)
+                        }
+                        LazyRow(
+                            state = chipListState,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        ) {
                             items(chipIds) { id ->
+                                val active = id == vm.currentScreenId
                                 AssistChip(
                                     onClick = {
                                         when {
@@ -156,9 +168,14 @@ fun DeskFlowApp(vm: DeskFlowViewModel) {
                                     label = {
                                         Text(
                                             if (id == DOCK_PAGE_ID) "Dock"
-                                            else "第${pages.indexOfFirst { it.screenId == id } + 1}页($id)",
+                                            else "第${pages.indexOfFirst { it.screenId == id } + 1}页",
+                                            fontWeight = if (active) FontWeight.Bold else null,
                                         )
                                     },
+                                    colors = AssistChipDefaults.assistChipColors(
+                                        containerColor = if (active) MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.surfaceVariant,
+                                    ),
                                     modifier = Modifier.padding(end = 4.dp),
                                 )
                             }

@@ -627,6 +627,11 @@ Dock，而 pager 没有 Dock 页；拖进 Dock 走页签（原 `dropToPage` 本�
 拖出边缘换页后松手落到目标页（此前必中断的路径）；`python scripts/drag-check.py drag`
 与 `tap` 回归。
 
+真机首测反馈（同日补）：页签原本就没有「当前页」高亮，滑动后无从判断位置。补：当前页签
+primaryContainer 底色 + 加粗（`AssistChipDefaults`），页签行 `rememberLazyListState` 跟随
+当前页自动滚动；顺带去掉页签文本里的调试性 id 后缀（「第1页(1234)」→「第1页」）。
+滑动落定 → currentScreenId 的同步本身工作正常（高亮即证据）。
+
 ## 下一步
 
 - 真机验证 22 节：滑动翻页 + 拖拽共存（`python scripts/drag-check.py drag`、`tap` 回归）
